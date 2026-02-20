@@ -96,7 +96,10 @@ Once the bot is in your server, use these commands:
 |---------|-------------|-------|
 | `/setup-channel` | Add a channel to receive quest notifications | `/setup-channel channel: #notifications filter: orbs` |
 | `/questpingrole` | Set a role to mention when new quests arrive | `/questpingrole role: @QuestHunters` |
+| `/remove` | Remove a configured channel or ping role | `/remove type: Remove Channel channel: #notifications` |
 | `/serverconfig` | View current server configuration | `/serverconfig` |
+| `/help` | Show all available commands | `/help` |
+| `/stats` | View bot statistics and metrics | `/stats` |
 | `/latestquest` | Show the most recently detected quest | `/latestquest` |
 | `/activequests` | List all active/tracked quests | `/activequests` |
 | `/spoofguide` | Get QuestPhantom spoofing guide | `/spoofguide` |
@@ -182,11 +185,3 @@ This project is provided as-is for personal use.
 Found a bug? Have an improvement? Feel free to submit an issue or pull request!
 
 ---
-
-**Made with ❤️ for Discord quest hunters**
-
-
-
-
-
-
