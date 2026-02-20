@@ -1,4 +1,4 @@
-# QuestHunter 🎯
+# <img src="https://i.imgur.com/yTgBkjM.png" width="50" alt="QuestPhantom">  QuestHunter
 
 > **Automatically detect and broadcast Discord Quests** to your Discord servers with this powerful Node.js bot.
 
