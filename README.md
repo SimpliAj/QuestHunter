@@ -6,14 +6,13 @@
 
 ## 📋 Overview
 
-QuestHunter is a Discord bot + Puppeteer scraper that automatically detects new Discord quests and broadcasts them to your servers. Perfect for quest hunters who want to stay updated without manually checking Discord!
-
-Invite the bot through [this link](https://discord.com/oauth2/authorize?client_id=1474123878002462801&permissions=2147699712&integration_type=0&scope=bot) if you dont want to host your own bot.
-
 > [!NOTE]
 > **This Bot was made for QuestPhantom Users to help them keep track of new quests for spoofing those:**
 > https://github.com/SimpliAj/QuestPhantom
 
+QuestHunter is a Discord bot + Puppeteer scraper that automatically detects new Discord quests and broadcasts them to your servers. Perfect for quest hunters who want to stay updated without manually checking Discord!
+
+Invite the bot through [this link](https://discord.com/oauth2/authorize?client_id=1474123878002462801&permissions=2147699712&integration_type=0&scope=bot) if you dont want to host your own bot.
 
 ---
 
