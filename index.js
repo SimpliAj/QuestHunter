@@ -161,6 +161,38 @@ async function registerSlashCommands() {
     {
       name: 'activequests',
       description: 'Show all active quests',
+    },
+    {
+      name: 'help',
+      description: 'Show all available commands',
+    },
+    {
+      name: 'stats',
+      description: 'Show bot statistics',
+    },
+    {
+      name: 'remove',
+      description: 'Remove a channel or ping role',
+      options: [
+        {
+          name: 'type',
+          description: 'What to remove',
+          type: 3, // STRING type
+          required: true,
+          choices: [
+            { name: 'Remove Channel', value: 'channel' },
+            { name: 'Remove Ping Role', value: 'pingrole' },
+          ],
+        },
+        {
+          name: 'channel',
+          description: 'The channel to remove',
+          type: 3, // STRING type for autocomplete
+          required: false,
+          autocomplete: true,
+        },
+      ],
+      default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
     }
   );
 
@@ -191,6 +223,33 @@ async function scanForQuests() {
 
 // Listen for slash commands
 client.on('interactionCreate', async (interaction) => {
+  // Handle autocomplete
+  if (interaction.isAutocomplete()) {
+    if (interaction.commandName === 'remove') {
+      const focusedOption = interaction.options.getFocused(true);
+      
+      if (focusedOption.name === 'channel') {
+        const type = interaction.options.getString('type');
+        
+        // Only show channels if type is 'channel'
+        if (type === 'channel') {
+          const settings = guildSettings.get(interaction.guildId);
+          const channels = settings?.channels || [];
+          
+          const choices = channels.map(ch => ({
+            name: `#${interaction.guild?.channels.cache.get(ch.id)?.name || 'unknown'}`,
+            value: ch.id
+          }));
+          
+          await interaction.respond(choices.slice(0, 25)); // Max 25 choices
+        } else {
+          await interaction.respond([]);
+        }
+      }
+    }
+    return;
+  }
+
   if (!interaction.isCommand()) return;
 
   try {
@@ -231,8 +290,26 @@ client.on('interactionCreate', async (interaction) => {
 
       const filterText = { 'all': 'All Quests', 'orbs': 'Orbs Only', 'no_orbs': 'No Orbs' }[filter];
 
+      const embed = {
+        color: 0x5865F2,
+        title: '✅ Channel Added',
+        description: `<#${channel.id}> has been added to receive quest notifications`,
+        fields: [
+          {
+            name: 'Filter',
+            value: filterText,
+            inline: true
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
       await interaction.reply({
-        content: `✅ Added <#${channel.id}> with filter: **${filterText}**`,
+        embeds: [embed],
         ephemeral: true,
       });
     }
@@ -253,8 +330,26 @@ client.on('interactionCreate', async (interaction) => {
       guildSettings.get(interaction.guildId).questPingRoleId = role.id;
       saveData();
 
+      const embed = {
+        color: 0x5865F2,
+        title: '✅ Ping Role Set',
+        description: `The role <@&${role.id}> will now be mentioned when new quests are detected`,
+        fields: [
+          {
+            name: 'Role',
+            value: `<@&${role.id}>`,
+            inline: true
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
       await interaction.reply({
-        content: `✅ Quest ping role set to <@&${role.id}>`,
+        embeds: [embed],
         ephemeral: true,
       });
     }
@@ -264,22 +359,46 @@ client.on('interactionCreate', async (interaction) => {
       const pingRoleId = settings?.questPingRoleId;
       const channels = settings?.channels || [];
 
-      let configText = `**📋 Server Configuration**\n\n`;
+      const fields = [];
       
       if (channels.length === 0) {
-        configText += `📍 **Notification Channels:** Not configured\n`;
+        fields.push({
+          name: '📍 Notification Channels',
+          value: 'Not configured',
+          inline: false
+        });
       } else {
-        configText += `📍 **Notification Channels:**\n`;
-        channels.forEach((ch, idx) => {
+        const channelList = channels.map((ch, idx) => {
           const filterText = { 'all': 'All Quests', 'orbs': 'Orbs Only', 'no_orbs': 'No Orbs' }[ch.filter];
-          configText += `   ${idx + 1}. <#${ch.id}> - ${filterText}\n`;
+          return `${idx + 1}. <#${ch.id}> - ${filterText}`;
+        }).join('\n');
+        fields.push({
+          name: '📍 Notification Channels',
+          value: channelList,
+          inline: false
         });
       }
       
-      configText += `\n📢 **Quest Ping Role:** ${pingRoleId ? `<@&${pingRoleId}>` : 'Not configured'}\n`;
+      fields.push({
+        name: '📢 Quest Ping Role',
+        value: pingRoleId ? `<@&${pingRoleId}>` : 'Not configured',
+        inline: false
+      });
+
+      const embed = {
+        color: 0x5865F2,
+        title: '📋 Server Configuration',
+        description: 'Current settings for QuestHunter',
+        fields: fields,
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
 
       await interaction.reply({
-        content: configText,
+        embeds: [embed],
         ephemeral: true,
       });
     }
@@ -368,6 +487,178 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         content: `📋 **Active Quests (${quests.length} total)**\n\n${questLinks}`, 
         ephemeral: true 
       });
+    }
+
+    if (interaction.commandName === 'help') {
+      const helpEmbed = {
+        color: 0x5865F2,
+        title: '❓ QuestHunter Commands',
+        description: 'All available commands for QuestHunter',
+        fields: [
+          {
+            name: '⚙️ Admin Commands',
+            value: '`/setup-channel` - Add a channel for quest notifications\n`/questpingrole` - Set a role to mention for quests\n`/remove` - Remove a channel or ping role',
+            inline: false
+          },
+          {
+            name: '📋 Info Commands',
+            value: '`/serverconfig` - View server configuration\n`/help` - Show this message\n`/stats` - View bot statistics',
+            inline: false
+          },
+          {
+            name: '🎯 Quest Commands',
+            value: '`/latestquest` - Show latest detected quest\n`/activequests` - List all active quests\n`/spoofguide` - Get QuestPhantom guide',
+            inline: false
+          },
+          {
+            name: '🗳️ Support QuestHunter',
+            value: '[Vote on top.gg](https://top.gg/de/bot/1474123878002462801/vote)',
+            inline: false
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      await interaction.reply({
+        embeds: [helpEmbed],
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.commandName === 'stats') {
+      const totalServers = guildSettings.size;
+      const totalChannels = Array.from(guildSettings.values()).reduce((sum, settings) => sum + (settings.channels?.length || 0), 0);
+      const totalQuests = knownQuests.size;
+
+      const statsEmbed = {
+        color: 0x5865F2,
+        title: '📊 Bot Statistics',
+        description: 'QuestHunter Performance Metrics',
+        fields: [
+          {
+            name: '🌐 Servers',
+            value: totalServers.toString(),
+            inline: true
+          },
+          {
+            name: '📍 Configured Channels',
+            value: totalChannels.toString(),
+            inline: true
+          },
+          {
+            name: '📋 Tracked Quests',
+            value: totalQuests.toString(),
+            inline: true
+          },
+          {
+            name: '⏱️ Scan Interval',
+            value: `${Math.round(process.env.SCRAPER_INTERVAL / 60000)} minutes`,
+            inline: true
+          },
+          {
+            name: '🤖 Bot Version',
+            value: 'v1.0.0',
+            inline: true
+          },
+          {
+            name: '📡 Status',
+            value: '🟢 Online',
+            inline: true
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      await interaction.reply({
+        embeds: [statsEmbed],
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.commandName === 'remove') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        return await interaction.reply({
+          content: '❌ You need the Manage Guild permission to use this command',
+          ephemeral: true,
+        });
+      }
+
+      const type = interaction.options.getString('type');
+      const settings = guildSettings.get(interaction.guildId);
+
+      if (type === 'channel') {
+        const channelId = interaction.options.getString('channel');
+        if (!channelId) {
+          return await interaction.reply({
+            content: '❌ Please specify a channel to remove',
+            ephemeral: true,
+          });
+        }
+
+        const channels = settings?.channels || [];
+        const channelIndex = channels.findIndex(c => c.id === channelId);
+
+        if (channelIndex === -1) {
+          return await interaction.reply({
+            content: `❌ <#${channelId}> is not configured for quest notifications`,
+            ephemeral: true,
+          });
+        }
+
+        channels.splice(channelIndex, 1);
+        saveData();
+
+        const embed = {
+          color: 0x5865F2,
+          title: '✅ Channel Removed',
+          description: `<#${channelId}> has been removed from quest notifications`,
+          footer: {
+            text: 'QuestHunter',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+
+        await interaction.reply({
+          embeds: [embed],
+          ephemeral: true,
+        });
+      } else if (type === 'pingrole') {
+        if (!settings?.questPingRoleId) {
+          return await interaction.reply({
+            content: '❌ No ping role is currently configured',
+            ephemeral: true,
+          });
+        }
+
+        const roleId = settings.questPingRoleId;
+        delete settings.questPingRoleId;
+        saveData();
+
+        const embed = {
+          color: 0x5865F2,
+          title: '✅ Ping Role Removed',
+          description: `The quest ping role has been removed`,
+          footer: {
+            text: 'QuestHunter',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+
+        await interaction.reply({
+          embeds: [embed],
+          ephemeral: true,
+        });
+      }
     }
   } catch (error) {
     console.error('❌ Error handling slash command:', error);
