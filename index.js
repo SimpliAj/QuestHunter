@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType } = require('discord.js');
 const { REST } = require('discord.js');
 const { Routes } = require('discord.js');
 const dotenv = require('dotenv');
@@ -25,6 +25,7 @@ const client = new Client({
 // Data persistence
 const DATA_DIR = path.join(__dirname, 'data');
 const QUESTS_FILE = path.join(DATA_DIR, 'known_quests.json');
+const EXPIRED_QUESTS_FILE = path.join(DATA_DIR, 'expired_quests.json');
 const GUILDS_FILE = path.join(DATA_DIR, 'guild_settings.json');
 
 if (!fs.existsSync(DATA_DIR)) {
@@ -33,8 +34,10 @@ if (!fs.existsSync(DATA_DIR)) {
 
 // Track known quests to detect new ones
 let knownQuests = new Map();
+let expiredQuests = new Map();
 let guildSettings = new Map(); // { guildId: { channelId: '...' } }
 let scanInterval;
+let botReady = false; // Flag to prevent sending notifications during startup
 
 const SCAN_INTERVAL = process.env.SCAN_INTERVAL || 60000; // 1 minute default
 
@@ -44,10 +47,20 @@ function loadData() {
     if (fs.existsSync(QUESTS_FILE)) {
       const data = JSON.parse(fs.readFileSync(QUESTS_FILE, 'utf-8'));
       knownQuests = new Map(data);
-      console.log(`✅ Loaded ${knownQuests.size} known quests from file`);
+      console.log(`✅ Loaded ${knownQuests.size} active quests from file`);
     }
   } catch (error) {
     console.error('⚠️  Error loading quests file:', error.message);
+  }
+
+  try {
+    if (fs.existsSync(EXPIRED_QUESTS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(EXPIRED_QUESTS_FILE, 'utf-8'));
+      expiredQuests = new Map(data);
+      console.log(`✅ Loaded ${expiredQuests.size} expired quests from file`);
+    }
+  } catch (error) {
+    console.error('⚠️  Error loading expired quests file:', error.message);
   }
 
   try {
@@ -65,6 +78,7 @@ function loadData() {
 function saveData() {
   try {
     fs.writeFileSync(QUESTS_FILE, JSON.stringify(Array.from(knownQuests.entries())), 'utf-8');
+    fs.writeFileSync(EXPIRED_QUESTS_FILE, JSON.stringify(Array.from(expiredQuests.entries())), 'utf-8');
     fs.writeFileSync(GUILDS_FILE, JSON.stringify(Array.from(guildSettings.entries())), 'utf-8');
   } catch (error) {
     console.error('❌ Error saving data:', error.message);
@@ -85,9 +99,81 @@ function setGuildChannel(guildId, channelId) {
   saveData();
 }
 
+// Check permissions when bot joins a guild
+client.on('guildCreate', async (guild) => {
+  try {
+    console.log(`🆕 Bot joined guild: ${guild.name}`);
+    
+    // Get the guild owner
+    const owner = await guild.fetchOwner();
+    
+    // Required permissions for the bot
+    const requiredPermissions = [
+      'SendMessages',
+      'EmbedLinks',
+      'ReadMessageHistory'
+    ];
+    
+    // Check which permissions are missing
+    const botMember = guild.members.me;
+    const missingPermissions = requiredPermissions.filter(perm => !botMember.permissions.has(perm));
+    
+    if (missingPermissions.length > 0) {
+      // Send DM to guild owner
+      try {
+        const dmEmbed = {
+          color: 0xFF0000,
+          title: '⚠️ Missing Bot Permissions',
+          description: `QuestHunter is missing the following permissions in **${guild.name}**:`,
+          fields: [
+            {
+              name: 'Missing Permissions',
+              value: missingPermissions.map(p => `• ${p}`).join('\n'),
+              inline: false
+            },
+            {
+              name: '🔧 How to Fix',
+              value: `1. Go to Server Settings → Roles\n2. Find the **QuestHunter** role\n3. Enable the missing permissions\n4. The bot will work once permissions are granted`,
+              inline: false
+            }
+          ],
+          footer: {
+            text: 'QuestHunter',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+        
+        await owner.send({ embeds: [dmEmbed] });
+        console.log(`📨 Sent permission warning DM to ${owner.user.tag}`);
+      } catch (dmError) {
+        console.error(`⚠️ Could not send DM to ${owner.user.tag}:`, dmError.message);
+      }
+    } else {
+      console.log(`✅ All permissions OK in ${guild.name}`);
+    }
+  } catch (error) {
+    console.error('❌ Error checking guild permissions:', error);
+  }
+});
+
 client.once('ready', () => {
+  // Load persistent data when bot is ready
+  loadData();
+  
   console.log(`✅ Bot logged in as ${client.user.tag}`);
   console.log(`🔄 Starting quest scanner with ${SCAN_INTERVAL}ms interval`);
+  
+  // Set bot status to watching quests
+  client.user.setPresence({
+    activities: [
+      {
+        name: 'Searching for quests',
+        type: ActivityType.Streaming
+      }
+    ],
+    status: 'online'
+  });
   
   // Load persistent data
   loadData();
@@ -203,6 +289,10 @@ async function registerSlashCommands() {
     // Register global commands
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
     console.log('✅ Slash commands registered');
+    
+    // Mark bot as ready to receive webhooks and send notifications
+    botReady = true;
+    console.log('🟢 Bot is fully initialized and ready to send quest notifications');
   } catch (error) {
     console.error('❌ Error registering slash commands:', error);
   }
@@ -257,6 +347,18 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
         return await interaction.reply({
           content: '❌ You need the Manage Guild permission to use this command',
+          ephemeral: true,
+        });
+      }
+
+      // Check bot permissions
+      const botMember = interaction.guild.members.me;
+      const requiredPermissions = ['SendMessages', 'EmbedLinks', 'ReadMessageHistory'];
+      const missingPermissions = requiredPermissions.filter(perm => !botMember.permissions.has(perm));
+      
+      if (missingPermissions.length > 0) {
+        return await interaction.reply({
+          content: `❌ **Bot is missing permissions!**\n\nThe bot needs the following permissions to work:\n${missingPermissions.map(p => `• ${p}`).join('\n')}\n\nPlease give the bot these permissions and try again.`,
           ephemeral: true,
         });
       }
@@ -532,8 +634,9 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
     if (interaction.commandName === 'stats') {
       const totalServers = guildSettings.size;
       const totalChannels = Array.from(guildSettings.values()).reduce((sum, settings) => sum + (settings.channels?.length || 0), 0);
-      const totalQuests = knownQuests.size;
-
+      const totalTrackedQuests = knownQuests.size + expiredQuests.size; // All quests ever
+      const activeQuests = knownQuests.size; // Only active quests
+      
       const statsEmbed = {
         color: 0x5865F2,
         title: '📊 Bot Statistics',
@@ -545,33 +648,18 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             inline: true
           },
           {
-            name: '📍 Configured Channels',
-            value: totalChannels.toString(),
+            name: '📚 Tracked Quests',
+            value: totalTrackedQuests.toString(),
             inline: true
           },
           {
-            name: '📋 Tracked Quests',
-            value: totalQuests.toString(),
-            inline: true
-          },
-          {
-            name: '⏱️ Scan Interval',
-            value: `${Math.round(process.env.SCRAPER_INTERVAL / 60000)} minutes`,
-            inline: true
-          },
-          {
-            name: '🤖 Bot Version',
-            value: 'v1.0.0',
-            inline: true
-          },
-          {
-            name: '📡 Status',
-            value: '🟢 Online',
-            inline: true
+            name: '✨ Active Quests',
+            value: activeQuests.toString(),
+            inline: false
           }
         ],
         footer: {
-          text: 'QuestHunter',
+          text: 'QuestHunter v1.0.0',
           icon_url: 'https://i.imgur.com/yTgBkjM.png'
         },
         timestamp: new Date().toISOString()
@@ -837,13 +925,32 @@ app.post('/webhook/quests', async (req, res) => {
     
     console.log(`\n📥 Received ${quests.length} quest(s) from scraper`);
     
-    // Get the first configured guild (or use all)
-    let targetGuildId = null;
-    for (const [guildId, settings] of guildSettings) {
-      if (settings.channels && settings.channels.length > 0) {
-        targetGuildId = guildId;
-        break;
+    // Skip processing if bot is still starting up
+    if (!botReady) {
+      console.log('⏳ Bot still initializing, loading quests without sending notifications...');
+    }
+    
+    // Track which quests are currently sent by scraper
+    const currentQuestIds = new Set(quests.map(q => q.id));
+    
+    // Find quests that were active but are no longer sent (expired)
+    const expiredQuestsList = [];
+    knownQuests.forEach((quest, questId) => {
+      if (!currentQuestIds.has(questId)) {
+        expiredQuestsList.push(quest);
+        // Move to expired quests
+        expiredQuests.set(questId, quest);
+        knownQuests.delete(questId);
       }
+    });
+    
+    // Log expired quests
+    if (expiredQuestsList.length > 0) {
+      console.log(`\n🗑️  Expired quest(s):`);
+      expiredQuestsList.forEach(quest => {
+        console.log(`  ❌ ${quest.name} (Was expiring: ${quest.expiresAt})`);
+      });
+      console.log(`  📝 These quests are kept in expired_quests.json`);
     }
     
     // Process each quest
@@ -854,36 +961,50 @@ app.post('/webhook/quests', async (req, res) => {
         newQuestCount++;
         console.log(`  🆕 NEW: ${quest.name} (${quest.reward}, Expires: ${quest.expiresAt})`);
         
-        try {
-          if (targetGuildId) {
-            // Get all configured channels for this guild
-            const guildChannels = guildSettings.get(targetGuildId)?.channels || [];
-            
-            if (guildChannels.length > 0) {
-              // Send to all configured channels with matching filters
-              for (const ch of guildChannels) {
-                try {
-                  await notifyNewQuest(ch.id, quest, targetGuildId, ch.filter);
-                } catch (chError) {
-                  console.error(`⚠️  Error sending to channel ${ch.id}:`, chError.message);
+        // Only send notifications if bot is fully ready
+        if (botReady) {
+          try {
+            // Broadcast to ALL configured guilds
+            let sentToCount = 0;
+            for (const [guildId, settings] of guildSettings) {
+              const guildChannels = settings.channels || [];
+              
+              if (guildChannels.length > 0) {
+                // Send to all configured channels with matching filters
+                for (const ch of guildChannels) {
+                  try {
+                    await notifyNewQuest(ch.id, quest, guildId, ch.filter);
+                    sentToCount++;
+                  } catch (chError) {
+                    console.error(`⚠️  Error sending to channel ${ch.id}:`, chError.message);
+                  }
                 }
               }
             }
-          } else {
-            // Fallback to default channel if configured
-            const defaultChannelId = process.env.NOTIFICATION_CHANNEL_ID;
-            if (defaultChannelId) {
-              try {
-                const channel = await client.channels.fetch(defaultChannelId);
-                const guildId = channel.guildId;
-                await notifyNewQuest(defaultChannelId, quest, guildId, 'all');
-              } catch (err) {
-                console.error(`⚠️  Could not use default channel:`, err.message);
+            
+            // Fallback to default channel if no guilds configured
+            if (sentToCount === 0) {
+              const defaultChannelId = process.env.NOTIFICATION_CHANNEL_ID;
+              if (defaultChannelId) {
+                try {
+                  const channel = await client.channels.fetch(defaultChannelId);
+                  const guildId = channel.guildId;
+                  await notifyNewQuest(defaultChannelId, quest, guildId, 'all');
+                  sentToCount++;
+                } catch (err) {
+                  console.error(`⚠️  Could not use default channel:`, err.message);
+                }
               }
             }
+            
+            if (sentToCount > 0) {
+              console.log(`  ✅ Sent to ${sentToCount} channel(s)`);
+            }
+          } catch (error) {
+            console.error(`⚠️  Could not send notification for quest ${quest.id}:`, error.message);
           }
-        } catch (error) {
-          console.error(`⚠️  Could not send notification for quest ${quest.id}:`, error.message);
+        } else {
+          console.log(`  ⏸️  Skipping notification (bot still initializing)`);
         }
       } else {
         console.log(`  ℹ️  EXISTING: ${quest.name}`);
@@ -904,12 +1025,15 @@ app.post('/webhook/quests', async (req, res) => {
     // Save data after processing
     saveData();
     
-    console.log(`✅ Processed ${quests.length} quests (${newQuestCount} new)\n`);
+    console.log(`✅ Processed ${quests.length} quests (${newQuestCount} new, ${expiredQuestsList.length} expired)`);
+    console.log(`📊 Active quests in memory: ${knownQuests.size}`);
+    console.log(`📊 Expired quests in memory: ${expiredQuests.size}\n`);
     
     res.status(200).json({ 
       success: true, 
       processed: quests.length, 
       newQuests: newQuestCount,
+      expiredQuests: expiredQuests.length,
       totalTracked: knownQuests.size
     });
     
