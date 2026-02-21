@@ -13,6 +13,7 @@ const SCAN_INTERVAL = process.env.SCRAPER_INTERVAL || 3600000; // 1 hour default
 
 let notifiedQuestIds = new Set();
 let browser;
+let userStatusInterval;
 
 const QUEST_PAGE_URL = 'https://discord.com/quest-home?sort=most_recent';
 const LAST_SCAN_FILE = path.join(__dirname, 'data', 'last_scan.json');
@@ -46,12 +47,51 @@ function saveLastScanTime() {
   }
 }
 
+async function initUserClient() {
+  // Set invisible status via Discord API (no WebSocket connection)
+  const setInvisibleStatus = async () => {
+    try {
+      if (!USER_TOKEN || USER_TOKEN.length < 10) {
+        return; // Skip if token not valid
+      }
+
+      // Discord API expects 'invisible' status
+      await axios.patch('https://discord.com/api/v10/users/@me/settings', 
+        { status: 'invisible' },
+        {
+          headers: {
+            'Authorization': USER_TOKEN,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0'
+          }
+        }
+      );
+      console.log('✅ Set account to invisible');
+    } catch (err) {
+      // Silently ignore errors - Discord may rate limit or reject the request
+    }
+  };
+  
+  // Set invisible status immediately multiple times
+  await setInvisibleStatus();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  await setInvisibleStatus();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  await setInvisibleStatus();
+  
+  // Keep resetting status every 5 seconds to prevent Discord from changing it online
+  userStatusInterval = setInterval(setInvisibleStatus, 5000);
+}
+
 async function initBrowser() {
   console.log('🌐 Launching browser...');
   browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
+  
+  // Initialize user client to set invisible status
+  await initUserClient();
 }
 
 function parseQuestTypeFromButton(buttonText) {
