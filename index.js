@@ -27,6 +27,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const QUESTS_FILE = path.join(DATA_DIR, 'known_quests.json');
 const EXPIRED_QUESTS_FILE = path.join(DATA_DIR, 'expired_quests.json');
 const GUILDS_FILE = path.join(DATA_DIR, 'guild_settings.json');
+const USER_PREFS_FILE = path.join(DATA_DIR, 'user_preferences.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -36,6 +37,7 @@ if (!fs.existsSync(DATA_DIR)) {
 let knownQuests = new Map();
 let expiredQuests = new Map();
 let guildSettings = new Map(); // { guildId: { channelId: '...' } }
+let userPreferences = new Map(); // { userId: { dmNotifications: boolean } }
 let scanInterval;
 let botReady = false; // Flag to prevent sending notifications during startup
 let paginationState = new Map(); // Track pagination state: messageId -> { page, totalPages, quests }
@@ -73,6 +75,16 @@ function loadData() {
   } catch (error) {
     console.error('⚠️  Error loading guild settings file:', error.message);
   }
+
+  try {
+    if (fs.existsSync(USER_PREFS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(USER_PREFS_FILE, 'utf-8'));
+      userPreferences = new Map(data);
+      console.log(`✅ Loaded ${userPreferences.size} user preferences from file`);
+    }
+  } catch (error) {
+    console.error('⚠️  Error loading user preferences file:', error.message);
+  }
 }
 
 // Save persistent data
@@ -81,6 +93,7 @@ function saveData() {
     fs.writeFileSync(QUESTS_FILE, JSON.stringify(Array.from(knownQuests.entries())), 'utf-8');
     fs.writeFileSync(EXPIRED_QUESTS_FILE, JSON.stringify(Array.from(expiredQuests.entries())), 'utf-8');
     fs.writeFileSync(GUILDS_FILE, JSON.stringify(Array.from(guildSettings.entries())), 'utf-8');
+    fs.writeFileSync(USER_PREFS_FILE, JSON.stringify(Array.from(userPreferences.entries())), 'utf-8');
   } catch (error) {
     console.error('❌ Error saving data:', error.message);
   }
@@ -319,6 +332,10 @@ async function registerSlashCommands() {
           required: true,
         },
       ],
+    },
+    {
+      name: 'dm-notifications',
+      description: 'Toggle DM notifications for new quests',
     }
   );
 
@@ -1005,6 +1022,43 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         });
       }
     }
+
+    if (interaction.commandName === 'dm-notifications') {
+      const userId = interaction.user.id;
+      const userPrefs = userPreferences.get(userId) || { dmNotifications: false };
+      const isEnabled = userPrefs.dmNotifications;
+      
+      const embed = {
+        color: 0x5865F2,
+        title: '💬 DM Notifications',
+        description: `You will receive direct messages when new quests are detected.`,
+        fields: [
+          {
+            name: 'Current Status',
+            value: isEnabled ? '✅ **ENABLED**' : '❌ **DISABLED**',
+            inline: false
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      const button = new ButtonBuilder()
+        .setCustomId(`toggle_dm_${userId}`)
+        .setLabel(isEnabled ? '🔔 Disable' : '🔕 Enable')
+        .setStyle(isEnabled ? ButtonStyle.Danger : ButtonStyle.Success);
+
+      const row = new ActionRowBuilder().addComponents(button);
+
+      await interaction.reply({
+        embeds: [embed],
+        components: [row],
+        ephemeral: true,
+      });
+    }
   } catch (error) {
     console.error('❌ Error handling slash command:', error);
     try {
@@ -1081,6 +1135,45 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
   }
 }
 
+async function sendDMNotifications(questData) {
+  try {
+    let sentCount = 0;
+    const usersToNotify = [];
+
+    // Find all users with DM notifications enabled
+    for (const [userId, prefs] of userPreferences) {
+      if (prefs.dmNotifications) {
+        usersToNotify.push(userId);
+      }
+    }
+
+    if (usersToNotify.length === 0) {
+      return;
+    }
+
+    console.log(`  💬 Sending DM to ${usersToNotify.length} user(s)...`);
+
+    for (const userId of usersToNotify) {
+      try {
+        const user = await client.users.fetch(userId);
+        const questLink = `https://discord.com/quests/${questData.id}`;
+        const dmMessage = `🎯 **New Quest Detected!**\n\n**${questData.name}**\n${questData.reward}\n\n${questLink}`;
+        
+        await user.send(dmMessage);
+        sentCount++;
+      } catch (error) {
+        console.log(`  ⚠️  Could not send DM to user ${userId}: ${error.message}`);
+      }
+    }
+
+    if (sentCount > 0) {
+      console.log(`  ✅ Sent DM to ${sentCount} user(s)`);
+    }
+  } catch (error) {
+    console.error(`  ❌ Error sending DM notifications:`, error.message);
+  }
+}
+
 async function notifyExpiredQuest(channelId, questData) {
   try {
     console.log(`  📤 Attempting to send expired notification to channel ${channelId}`);
@@ -1134,6 +1227,62 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
   try {
+    if (interaction.customId.startsWith('toggle_dm_')) {
+      const userId = interaction.customId.split('_')[2];
+      
+      // Check if the button was pressed by the user who initiated the command
+      if (interaction.user.id !== userId) {
+        return await interaction.reply({
+          content: '❌ You cannot toggle this setting.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      // Toggle the setting
+      const userPrefs = userPreferences.get(userId) || { dmNotifications: false };
+      userPrefs.dmNotifications = !userPrefs.dmNotifications;
+      userPreferences.set(userId, userPrefs);
+      saveData();
+
+      const isEnabled = userPrefs.dmNotifications;
+
+      const embed = {
+        color: 0x5865F2,
+        title: '💬 DM Notifications',
+        description: `You will receive direct messages when new quests are detected.`,
+        fields: [
+          {
+            name: 'Current Status',
+            value: isEnabled ? '✅ **ENABLED**' : '❌ **DISABLED**',
+            inline: false
+          },
+          {
+            name: 'Status',
+            value: isEnabled ? 'You will now receive DM notifications for all new quests' : 'You will no longer receive DM notifications',
+            inline: false
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      const button = new ButtonBuilder()
+        .setCustomId(`toggle_dm_${userId}`)
+        .setLabel(isEnabled ? '🔔 Disable' : '🔕 Enable')
+        .setStyle(isEnabled ? ButtonStyle.Danger : ButtonStyle.Success);
+
+      const row = new ActionRowBuilder().addComponents(button);
+
+      await interaction.update({
+        embeds: [embed],
+        components: [row],
+      });
+      return;
+    }
+
     if (interaction.customId === 'inject_script') {
       await interaction.reply({
         content: `✅ **QuestPhantom Script - Auto Complete Discord Quests**
@@ -1407,6 +1556,9 @@ app.post('/webhook/quests', async (req, res) => {
             if (sentToCount > 0) {
               console.log(`  ✅ Sent to ${sentToCount} channel(s)`);
             }
+
+            // Send DM notifications to opted-in users
+            await sendDMNotifications(quest);
           } catch (error) {
             console.error(`⚠️  Could not send notification for quest ${quest.id}:`, error.message);
           }
