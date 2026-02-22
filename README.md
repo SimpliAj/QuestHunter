@@ -97,6 +97,7 @@ Once the bot is in your server, use these commands:
 | `/setup-channel` | Add a channel to receive quest notifications | `/setup-channel channel: #notifications filter: orbs` |
 | `/questpingrole` | Set a role to mention when new quests arrive | `/questpingrole role: @QuestHunters` |
 | `/remove` | Remove a configured channel or ping role | `/remove type: Remove Channel channel: #notifications` |
+| `/setup-expired-channel` | Set a channel for expired quest notifications | `/setup-expired-channel channel: #expired-quests` |
 | `/serverconfig` | View current server configuration | `/serverconfig` |
 | `/help` | Show all available commands | `/help` |
 | `/stats` | View bot statistics and metrics | `/stats` |
@@ -104,6 +105,7 @@ Once the bot is in your server, use these commands:
 | `/dm-notifications` | Toggle DM notifications for new quests | `/dm-notifications` |
 | `/latestquest` | Show the most recently detected quest | `/latestquest` |
 | `/activequests` | List all active/tracked quests | `/activequests` |
+| `/expiredquests` | View all expired quests | `/expiredquests` |
 | `/spoofguide` | Get QuestPhantom spoofing guide | `/spoofguide` |
 
 ---
