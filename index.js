@@ -297,6 +297,28 @@ async function registerSlashCommands() {
         },
       ],
       default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+    },
+    {
+      name: 'feedback',
+      description: 'Submit a bug report or feature request',
+      options: [
+        {
+          name: 'type',
+          description: 'Type of feedback',
+          type: 3, // STRING type
+          required: true,
+          choices: [
+            { name: '🐛 Bug Report', value: 'bug' },
+            { name: '💡 Feature Request', value: 'feature' },
+          ],
+        },
+        {
+          name: 'message',
+          description: 'Your feedback message',
+          type: 3, // STRING type
+          required: true,
+        },
+      ],
     }
   );
 
@@ -904,6 +926,81 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
         await interaction.reply({
           embeds: [embed],
+          ephemeral: true,
+        });
+      }
+    }
+
+    if (interaction.commandName === 'feedback') {
+      const type = interaction.options.getString('type');
+      const message = interaction.options.getString('message');
+      const feedbackWebhook = process.env.FEEDBACK_WEBHOOK;
+
+      if (!feedbackWebhook) {
+        return await interaction.reply({
+          content: '❌ Feedback system is not configured',
+          ephemeral: true,
+        });
+      }
+
+      try {
+        const typeEmoji = type === 'bug' ? '🐛' : '💡';
+        const typeText = type === 'bug' ? 'Bug Report' : 'Feature Request';
+        
+        const embed = {
+          color: type === 'bug' ? 0xFF0000 : 0x00FF00,
+          title: `${typeEmoji} ${typeText}`,
+          description: message,
+          fields: [
+            {
+              name: 'User',
+              value: `${interaction.user.username}#${interaction.user.discriminator}`,
+              inline: true
+            },
+            {
+              name: 'User ID',
+              value: interaction.user.id,
+              inline: true
+            },
+            {
+              name: 'Server',
+              value: interaction.guild?.name || 'DM',
+              inline: true
+            }
+          ],
+          footer: {
+            text: 'QuestHunter Feedback',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+
+        // Send to webhook
+        await axios.post(feedbackWebhook, {
+          username: 'Feedback',
+          avatar_url: client.user.displayAvatarURL(),
+          embeds: [embed]
+        });
+
+        const confirmEmbed = {
+          color: 0x5865F2,
+          title: '✅ Feedback Sent',
+          description: `Thank you for your ${typeText.toLowerCase()}! We appreciate your input.`,
+          footer: {
+            text: 'QuestHunter',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+
+        await interaction.reply({
+          embeds: [confirmEmbed],
+          ephemeral: true,
+        });
+      } catch (error) {
+        console.error('❌ Error sending feedback:', error.message);
+        await interaction.reply({
+          content: '❌ Failed to send feedback. Please try again later.',
           ephemeral: true,
         });
       }
