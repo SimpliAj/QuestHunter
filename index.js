@@ -1512,8 +1512,10 @@ app.post('/webhook/quests', async (req, res) => {
     // Process each quest
     let newQuestCount = 0;
     for (const quest of quests) {
-      // Check if this is a truly new quest
-      if (!knownQuests.has(quest.id)) {
+      // Check if this is a truly new quest (not previously notified)
+      const isNew = !knownQuests.has(quest.id);
+      
+      if (isNew) {
         newQuestCount++;
         console.log(`  🆕 NEW: ${quest.name} (${quest.reward}, Expires: ${quest.expiresAt})`);
         
@@ -1569,16 +1571,19 @@ app.post('/webhook/quests', async (req, res) => {
         console.log(`  ℹ️  EXISTING: ${quest.name}`);
       }
       
-      // Always update the quest data
-      knownQuests.set(quest.id, {
-        id: quest.id,
-        name: quest.name,
-        reward: quest.reward,
-        type: quest.type,
-        buttonLabel: quest.buttonLabel,
-        expiresAt: quest.expiresAt,
-        detectedAt: quest.detectedAt || new Date().toLocaleString(),
-      });
+      // Only update quest data for new quests
+      // For existing quests, they're already in knownQuests
+      if (isNew) {
+        knownQuests.set(quest.id, {
+          id: quest.id,
+          name: quest.name,
+          reward: quest.reward,
+          type: quest.type,
+          buttonLabel: quest.buttonLabel,
+          expiresAt: quest.expiresAt,
+          detectedAt: quest.detectedAt || new Date().toLocaleString(),
+        });
+      }
     }
     
     // Save data after processing
