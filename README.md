@@ -100,6 +100,7 @@ Once the bot is in your server, use these commands:
 | `/serverconfig` | View current server configuration | `/serverconfig` |
 | `/help` | Show all available commands | `/help` |
 | `/stats` | View bot statistics and metrics | `/stats` |
+| `/feedback` | Submit a bug report or feature request | `/feedback type: Bug Report message: Found an issue...` |
 | `/latestquest` | Show the most recently detected quest | `/latestquest` |
 | `/activequests` | List all active/tracked quests | `/activequests` |
 | `/spoofguide` | Get QuestPhantom spoofing guide | `/spoofguide` |
