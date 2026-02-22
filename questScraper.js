@@ -12,8 +12,6 @@ const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
 const SCAN_INTERVAL = process.env.SCRAPER_INTERVAL || 3600000; // 1 hour default
 
 let notifiedQuestIds = new Set();
-let browser;
-let userStatusInterval;
 
 const QUEST_PAGE_URL = 'https://discord.com/quest-home?sort=most_recent';
 const LAST_SCAN_FILE = path.join(__dirname, 'data', 'last_scan.json');
@@ -45,53 +43,6 @@ function saveLastScanTime() {
   } catch (error) {
     console.error('❌ Failed to save last scan time:', error.message);
   }
-}
-
-async function initUserClient() {
-  // Set invisible status via Discord API (no WebSocket connection)
-  const setInvisibleStatus = async () => {
-    try {
-      if (!USER_TOKEN || USER_TOKEN.length < 10) {
-        return; // Skip if token not valid
-      }
-
-      // Discord API expects 'invisible' status
-      await axios.patch('https://discord.com/api/v10/users/@me/settings', 
-        { status: 'invisible' },
-        {
-          headers: {
-            'Authorization': USER_TOKEN,
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0'
-          }
-        }
-      );
-      console.log('✅ Set account to invisible');
-    } catch (err) {
-      // Silently ignore errors - Discord may rate limit or reject the request
-    }
-  };
-  
-  // Set invisible status immediately multiple times
-  await setInvisibleStatus();
-  await new Promise(resolve => setTimeout(resolve, 100));
-  await setInvisibleStatus();
-  await new Promise(resolve => setTimeout(resolve, 100));
-  await setInvisibleStatus();
-  
-  // Keep resetting status every 5 seconds to prevent Discord from changing it online
-  userStatusInterval = setInterval(setInvisibleStatus, 5000);
-}
-
-async function initBrowser() {
-  console.log('🌐 Launching browser...');
-  browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-  
-  // Initialize user client to set invisible status
-  await initUserClient();
 }
 
 function parseQuestTypeFromButton(buttonText) {
@@ -173,71 +124,83 @@ function extractQuestsFromHTML(html) {
 
 async function fetchQuests() {
   try {
-    if (!browser) {
-      await initBrowser();
-    }
-
-    console.log('📄 Opening Discord Quests page...');
-    const page = await browser.newPage();
-
-    // Set token in local storage before navigation
-    await page.evaluateOnNewDocument((token) => {
-      localStorage.setItem('token', `"${token}"`);
-    }, USER_TOKEN);
-
-    // Navigate to quest page
+    let localBrowser;
     try {
-      await page.goto(QUEST_PAGE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-    } catch (error) {
-      console.log('⚠️  Discord Quests page load timeout, continuing anyway...');
-    }
+      localBrowser = await puppeteer.launch({
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      });
 
-    // Wait for quests to load
-    await new Promise(resolve => setTimeout(resolve, 3000));
+      console.log('🔍 Scanning for new quests...');
+      console.log('📄 Opening Discord Quests page...');
+      const page = await localBrowser.newPage();
 
-    // Get page HTML
-    const html = await page.content();
-    await page.close();
+      // Set token in local storage before navigation
+      await page.evaluateOnNewDocument((token) => {
+        localStorage.setItem('token', `"${token}"`);
+      }, USER_TOKEN);
 
-    // Parse active quests from HTML
-    const activeQuests = extractQuestsFromHTML(html);
-
-    if (!activeQuests || activeQuests.length === 0) {
-      console.log('⚠️  No active quests found on page');
-      return;
-    }
-
-    console.log(`📊 Found ${activeQuests.length} active quest(s)`);
-
-    // Check for new quests
-    const newQuests = [];
-    for (const quest of activeQuests) {
-      if (!notifiedQuestIds.has(quest.id)) {
-        newQuests.push({
-          id: quest.id,
-          name: quest.name,
-          reward: `${quest.orbs} Discord Orbs`,
-          type: quest.type,
-          buttonLabel: quest.buttonLabel,
-          expiresAt: quest.expiresAt,
-          detectedAt: new Date().toLocaleString()
-        });
-        notifiedQuestIds.add(quest.id);
+      // Navigate to quest page
+      try {
+        await page.goto(QUEST_PAGE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+      } catch (error) {
+        console.log('⚠️  Discord Quests page load timeout, continuing anyway...');
       }
-    }
 
-    if (newQuests.length > 0) {
-      console.log(`\n✨ Detected ${newQuests.length} new quest(s)!`);
-      for (const q of newQuests) {
-        console.log(`  📌 ${q.name}`);
-        console.log(`     Reward: ${q.reward}`);
-        console.log(`     Type: ${q.type} (${q.buttonLabel})`);
-        console.log(`     Expires: ${q.expiresAt}`);
+      // Wait for quests to load
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Get page HTML
+      const html = await page.content();
+      await page.close();
+
+      // Parse active quests from HTML
+      const activeQuests = extractQuestsFromHTML(html);
+
+      if (!activeQuests || activeQuests.length === 0) {
+        console.log('⚠️  No active quests found on page');
+        return;
       }
-      console.log('');
-      await sendQuestsToBot(newQuests);
-    } else {
-      console.log('✓ No new quests detected');
+
+      console.log(`📊 Found ${activeQuests.length} active quest(s)`);
+
+      // Check for new quests
+      const newQuests = [];
+      for (const quest of activeQuests) {
+        if (!notifiedQuestIds.has(quest.id)) {
+          newQuests.push({
+            id: quest.id,
+            name: quest.name,
+            reward: `${quest.orbs} Discord Orbs`,
+            type: quest.type,
+            buttonLabel: quest.buttonLabel,
+            expiresAt: quest.expiresAt,
+            detectedAt: new Date().toLocaleString()
+          });
+          notifiedQuestIds.add(quest.id);
+        }
+      }
+
+      if (newQuests.length > 0) {
+        console.log(`\n✨ Detected ${newQuests.length} new quest(s)!`);
+        for (const q of newQuests) {
+          console.log(`  📌 ${q.name}`);
+          console.log(`     Reward: ${q.reward}`);
+          console.log(`     Type: ${q.type} (${q.buttonLabel})`);
+          console.log(`     Expires: ${q.expiresAt}`);
+        }
+        console.log('');
+        await sendQuestsToBot(newQuests);
+      } else {
+        console.log('✓ No new quests detected');
+      }
+
+    } finally {
+      // Always close browser after scan
+      if (localBrowser) {
+        await localBrowser.close();
+        console.log('✅ Browser closed - account set to invisible');
+      }
     }
 
   } catch (error) {
@@ -301,7 +264,6 @@ async function start() {
 
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down...');
-  if (browser) await browser.close();
   process.exit(0);
 });
 
