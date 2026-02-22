@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags } = require('discord.js');
 const { REST } = require('discord.js');
 const { Routes } = require('discord.js');
 const dotenv = require('dotenv');
@@ -38,6 +38,7 @@ let expiredQuests = new Map();
 let guildSettings = new Map(); // { guildId: { channelId: '...' } }
 let scanInterval;
 let botReady = false; // Flag to prevent sending notifications during startup
+let paginationState = new Map(); // Track pagination state: messageId -> { page, totalPages, quests }
 
 const SCAN_INTERVAL = process.env.SCAN_INTERVAL || 60000; // 1 minute default
 
@@ -227,6 +228,23 @@ async function registerSlashCommands() {
     {
       name: 'serverconfig',
       description: 'Check the current server configuration',
+    },
+    {
+      name: 'setup-expired-channel',
+      description: 'Set the channel for expired quest notifications',
+      options: [
+        {
+          name: 'channel',
+          description: 'The channel to post expired quest alerts',
+          type: 7, // CHANNEL type
+          required: true,
+        },
+      ],
+      default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+    },
+    {
+      name: 'expiredquests',
+      description: 'View all expired quests',
     },
   ];
 
@@ -456,9 +474,63 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
+    if (interaction.commandName === 'setup-expired-channel') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        return await interaction.reply({
+          content: '❌ You need the Manage Guild permission to use this command',
+          ephemeral: true,
+        });
+      }
+
+      // Check bot permissions
+      const botMember = interaction.guild.members.me;
+      const requiredPermissions = ['SendMessages', 'EmbedLinks', 'ReadMessageHistory'];
+      const missingPermissions = requiredPermissions.filter(perm => !botMember.permissions.has(perm));
+      
+      if (missingPermissions.length > 0) {
+        return await interaction.reply({
+          content: `❌ **Bot is missing permissions!**\n\nThe bot needs the following permissions to work:\n${missingPermissions.map(p => `• ${p}`).join('\n')}\n\nPlease give the bot these permissions and try again.`,
+          ephemeral: true,
+        });
+      }
+
+      const channel = interaction.options.getChannel('channel');
+      
+      if (!guildSettings.has(interaction.guildId)) {
+        guildSettings.set(interaction.guildId, {});
+      }
+      
+      guildSettings.get(interaction.guildId).expiredChannelId = channel.id;
+      saveData();
+
+      const embed = {
+        color: 0x5865F2,
+        title: '✅ Expired Quest Channel Set',
+        description: `<#${channel.id}> will now receive notifications when quests expire`,
+        fields: [
+          {
+            name: 'Channel',
+            value: `<#${channel.id}>`,
+            inline: true
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      await interaction.reply({
+        embeds: [embed],
+        ephemeral: true,
+      });
+    }
+
     if (interaction.commandName === 'serverconfig') {
       const settings = guildSettings.get(interaction.guildId);
       const pingRoleId = settings?.questPingRoleId;
+      const expiredChannelId = settings?.expiredChannelId;
       const channels = settings?.channels || [];
 
       const fields = [];
@@ -484,6 +556,12 @@ client.on('interactionCreate', async (interaction) => {
       fields.push({
         name: '📢 Quest Ping Role',
         value: pingRoleId ? `<@&${pingRoleId}>` : 'Not configured',
+        inline: false
+      });
+
+      fields.push({
+        name: '🗑️ Expired Quest Channel',
+        value: expiredChannelId ? `<#${expiredChannelId}>` : 'Not configured',
         inline: false
       });
 
@@ -591,6 +669,88 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       });
     }
 
+    if (interaction.commandName === 'expiredquests') {
+      if (expiredQuests.size === 0) {
+        return await interaction.reply({
+          content: '❌ No expired quests tracked yet.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const quests = Array.from(expiredQuests.values());
+      const QUESTS_PER_PAGE = 20;
+      const totalPages = Math.ceil(quests.length / QUESTS_PER_PAGE);
+      
+      // Function to create page embed
+      function createPageEmbed(pageNum) {
+        const startIdx = (pageNum - 1) * QUESTS_PER_PAGE;
+        const endIdx = Math.min(startIdx + QUESTS_PER_PAGE, quests.length);
+        const pageQuests = quests.slice(startIdx, endIdx);
+        
+        const fields = pageQuests.map((q, i) => {
+          return {
+            name: `${startIdx + i + 1}. ${q.name}`,
+            value: `**Reward:** ${q.reward || 'Unknown'}\n**Expired:** ${q.expiresAt}`,
+            inline: false
+          };
+        });
+        
+        const embed = {
+          color: 0xFF5733,
+          title: '🗑️ Expired Quests',
+          description: `Page ${pageNum} of ${totalPages} (${quests.length} total quests)`,
+          fields: fields,
+          footer: {
+            text: 'QuestHunter',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+        
+        return embed;
+      }
+      
+      // Create initial embed
+      const firstEmbed = createPageEmbed(1);
+      
+      // Create buttons if there are multiple pages
+      let components = [];
+      if (totalPages > 1) {
+        components = [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`expired_prev_${interaction.user.id}`)
+              .setLabel('← Previous')
+              .setStyle(ButtonStyle.Primary)
+              .setDisabled(true), // Disabled on first page
+            new ButtonBuilder()
+              .setCustomId(`expired_next_${interaction.user.id}`)
+              .setLabel('Next →')
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId(`expired_close_${interaction.user.id}`)
+              .setLabel('Close')
+              .setStyle(ButtonStyle.Secondary)
+          )
+        ];
+      }
+      
+      const message = await interaction.reply({
+        embeds: [firstEmbed],
+        components: components,
+        flags: MessageFlags.Ephemeral,
+      });
+      
+      // Store pagination state
+      paginationState.set(message.id, {
+        page: 1,
+        totalPages: totalPages,
+        quests: quests,
+        createPageEmbed: createPageEmbed,
+        userId: interaction.user.id
+      });
+    }
+
     if (interaction.commandName === 'help') {
       const helpEmbed = {
         color: 0x5865F2,
@@ -599,7 +759,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         fields: [
           {
             name: '⚙️ Admin Commands',
-            value: '`/setup-channel` - Add a channel for quest notifications\n`/questpingrole` - Set a role to mention for quests\n`/remove` - Remove a channel or ping role',
+            value: '`/setup-channel` - Add a channel for quest notifications\n`/setup-expired-channel` - Set channel for expired quest notifications\n`/questpingrole` - Set a role to mention for quests\n`/remove` - Remove a channel or ping role',
             inline: false
           },
           {
@@ -609,7 +769,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           },
           {
             name: '🎯 Quest Commands',
-            value: '`/latestquest` - Show latest detected quest\n`/activequests` - List all active quests\n`/spoofguide` - Get QuestPhantom guide',
+            value: '`/latestquest` - Show latest detected quest\n`/activequests` - List all active quests\n`/expiredquests` - List all expired quests\n`/spoofguide` - Get QuestPhantom guide',
             inline: false
           },
           {
@@ -824,6 +984,54 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
   }
 }
 
+async function notifyExpiredQuest(channelId, questData) {
+  try {
+    console.log(`  📤 Attempting to send expired notification to channel ${channelId}`);
+    
+    const channel = await client.channels.fetch(channelId);
+    
+    if (!channel) {
+      console.error(`  ❌ Channel ${channelId} not found`);
+      return;
+    }
+    
+    const embed = {
+      color: 0xFF5733,
+      title: '⏰ Quest Expired',
+      description: `A quest has expired and is no longer available`,
+      fields: [
+        {
+          name: 'Quest Name',
+          value: questData.name,
+          inline: true
+        },
+        {
+          name: 'Reward',
+          value: questData.reward || 'Unknown',
+          inline: true
+        },
+        {
+          name: 'Expired Date',
+          value: questData.expiresAt,
+          inline: false
+        }
+      ],
+      footer: {
+        text: 'QuestHunter',
+        icon_url: 'https://i.imgur.com/yTgBkjM.png'
+      },
+      timestamp: new Date().toISOString()
+    };
+    
+    await channel.send({ embeds: [embed] });
+    
+    console.log(`  ✅ Expired notification sent to <#${channelId}>`);
+    
+  } catch (error) {
+    console.error(`  ❌ Error sending expired notification to channel ${channelId}:`, error.message);
+  }
+}
+
 // Handle button interactions
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
@@ -850,6 +1058,80 @@ client.on('interactionCreate', async (interaction) => {
 - 📌 Check the full README here: https://github.com/SimpliAj/QuestPhantom/blob/main/README.md`,
         ephemeral: true,
       });
+      return;
+    }
+
+    // Handle expired quests pagination buttons
+    if (interaction.customId.startsWith('expired_prev_') || 
+        interaction.customId.startsWith('expired_next_') ||
+        interaction.customId.startsWith('expired_close_')) {
+      
+      const userId = interaction.customId.split('_')[2];
+      
+      // Check if the button was pressed by the user who initiated the command
+      if (interaction.user.id !== userId) {
+        return await interaction.reply({
+          content: '❌ You cannot use this pagination.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      
+      const messageId = interaction.message.id;
+      const state = paginationState.get(messageId);
+      
+      if (!state) {
+        return await interaction.reply({
+          content: '❌ Pagination state not found. Please use the command again.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      
+      if (interaction.customId.startsWith('expired_close_')) {
+        // Delete the pagination state
+        paginationState.delete(messageId);
+        await interaction.deferUpdate();
+        return;
+      }
+      
+      // Update page number
+      if (interaction.customId.startsWith('expired_next_')) {
+        if (state.page < state.totalPages) {
+          state.page++;
+        }
+      } else if (interaction.customId.startsWith('expired_prev_')) {
+        if (state.page > 1) {
+          state.page--;
+        }
+      }
+      
+      // Create new embed for current page
+      const embed = state.createPageEmbed(state.page);
+      
+      // Update buttons state
+      const components = [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`expired_prev_${userId}`)
+            .setLabel('← Previous')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(state.page === 1), // Disable on first page
+          new ButtonBuilder()
+            .setCustomId(`expired_next_${userId}`)
+            .setLabel('Next →')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(state.page === state.totalPages), // Disable on last page
+          new ButtonBuilder()
+            .setCustomId(`expired_close_${userId}`)
+            .setLabel('Close')
+            .setStyle(ButtonStyle.Secondary)
+        )
+      ];
+      
+      await interaction.update({
+        embeds: [embed],
+        components: components,
+      });
+      
       return;
     }
     
@@ -951,6 +1233,34 @@ app.post('/webhook/quests', async (req, res) => {
         console.log(`  ❌ ${quest.name} (Was expiring: ${quest.expiresAt})`);
       });
       console.log(`  📝 These quests are kept in expired_quests.json`);
+      
+      // Send notifications for expired quests
+      if (botReady) {
+        try {
+          for (const quest of expiredQuestsList) {
+            // Broadcast to ALL configured guilds with expired channels
+            let sentToCount = 0;
+            for (const [guildId, settings] of guildSettings) {
+              const expiredChannelId = settings?.expiredChannelId;
+              
+              if (expiredChannelId) {
+                try {
+                  await notifyExpiredQuest(expiredChannelId, quest);
+                  sentToCount++;
+                } catch (chError) {
+                  console.error(`⚠️  Error sending expired notification to channel ${expiredChannelId}:`, chError.message);
+                }
+              }
+            }
+            
+            if (sentToCount > 0) {
+              console.log(`  ✅ Sent expired notification to ${sentToCount} channel(s)`);
+            }
+          }
+        } catch (error) {
+          console.error(`⚠️  Could not send expired quest notifications:`, error.message);
+        }
+      }
     }
     
     // Process each quest
