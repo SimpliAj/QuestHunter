@@ -101,6 +101,7 @@ Once the bot is in your server, use these commands:
 | `/help` | Show all available commands | `/help` |
 | `/stats` | View bot statistics and metrics | `/stats` |
 | `/feedback` | Submit a bug report or feature request | `/feedback type: Bug Report message: Found an issue...` |
+| `/dm-notifications` | Toggle DM notifications for new quests | `/dm-notifications` |
 | `/latestquest` | Show the most recently detected quest | `/latestquest` |
 | `/activequests` | List all active/tracked quests | `/activequests` |
 | `/spoofguide` | Get QuestPhantom spoofing guide | `/spoofguide` |
