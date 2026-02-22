@@ -11,9 +11,36 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://localhost:3001/webhook/qu
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
 const SCAN_INTERVAL = process.env.SCRAPER_INTERVAL || 3600000; // 1 hour default
 
-let notifiedQuestIds = new Set();
-
 const QUEST_PAGE_URL = 'https://discord.com/quest-home?sort=most_recent';
+const NOTIFIED_QUESTS_FILE = path.join(__dirname, 'data', 'notified_quests.json');
+
+// Load notified quest IDs
+function loadNotifiedQuestIds() {
+  try {
+    if (fs.existsSync(NOTIFIED_QUESTS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(NOTIFIED_QUESTS_FILE, 'utf8'));
+      return new Set(data);
+    }
+  } catch (error) {
+    console.warn('⚠️  Could not load notified quest IDs:', error.message);
+  }
+  return new Set();
+}
+
+// Save notified quest IDs
+function saveNotifiedQuestIds(questIds) {
+  try {
+    const dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    fs.writeFileSync(NOTIFIED_QUESTS_FILE, JSON.stringify(Array.from(questIds), null, 2));
+  } catch (error) {
+    console.error('❌ Failed to save notified quest IDs:', error.message);
+  }
+}
+
+let notifiedQuestIds = loadNotifiedQuestIds();
 const LAST_SCAN_FILE = path.join(__dirname, 'data', 'last_scan.json');
 
 // Load last scan time
@@ -164,37 +191,46 @@ async function fetchQuests() {
 
       console.log(`📊 Found ${activeQuests.length} active quest(s)`);
 
-      // Check for new quests
-      const newQuests = [];
-      for (const quest of activeQuests) {
-        if (!notifiedQuestIds.has(quest.id)) {
-          newQuests.push({
-            id: quest.id,
-            name: quest.name,
-            reward: `${quest.orbs} Discord Orbs`,
-            type: quest.type,
-            buttonLabel: quest.buttonLabel,
-            expiresAt: quest.expiresAt,
-            detectedAt: new Date().toLocaleString()
-          });
-          notifiedQuestIds.add(quest.id);
-        }
-      }
+      // Send ALL active quests to the bot (for proper expired quest detection)
+      // But only notify about quests we haven't notified about before
+      const questsToSend = activeQuests.map(quest => ({
+        id: quest.id,
+        name: quest.name,
+        reward: `${quest.orbs} Discord Orbs`,
+        type: quest.type,
+        buttonLabel: quest.buttonLabel,
+        expiresAt: quest.expiresAt,
+        detectedAt: new Date().toLocaleString(),
+        isNew: !notifiedQuestIds.has(quest.id) // Mark which quests are new
+      }));
 
-      if (newQuests.length > 0) {
-        console.log(`\n✨ Detected ${newQuests.length} new quest(s)!`);
-        for (const q of newQuests) {
+      // Track all active quest IDs as notified
+      for (const quest of activeQuests) {
+        notifiedQuestIds.add(quest.id);
+      }
+      saveNotifiedQuestIds(notifiedQuestIds);
+
+      const newQuestsCount = questsToSend.filter(q => q.isNew).length;
+      
+      if (newQuestsCount > 0) {
+        console.log(`\n✨ Detected ${newQuestsCount} new quest(s)!`);
+        for (const q of questsToSend.filter(q => q.isNew)) {
           console.log(`  📌 ${q.name}`);
           console.log(`     Reward: ${q.reward}`);
           console.log(`     Type: ${q.type} (${q.buttonLabel})`);
           console.log(`     Expires: ${q.expiresAt}`);
         }
         console.log('');
-        await sendQuestsToBot(newQuests);
       } else {
-        console.log('✓ No new quests detected');
+        console.log(`✓ No new quests (${activeQuests.length} active)`);
       }
 
+      if (questsToSend.length > 0) {
+        await sendQuestsToBot(questsToSend);
+      }
+
+    } catch (error) {
+      console.error('❌ Error in fetchQuests:', error.message);
     } finally {
       // Always close browser after scan
       if (localBrowser) {
