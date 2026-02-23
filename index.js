@@ -1458,13 +1458,48 @@ app.post('/webhook/quests', async (req, res) => {
       console.log('⏳ Bot still initializing, loading quests without sending notifications...');
     }
     
+    // Helper function to check if a quest is actually expired based on the date
+    function isQuestActuallyExpired(expiresAt) {
+      // expiresAt format: "9.3." (Day.Month.)
+      if (!expiresAt || expiresAt === 'Unknown') {
+        return false;
+      }
+      
+      const today = new Date();
+      const currentDay = today.getDate();
+      const currentMonth = today.getMonth() + 1; // getMonth returns 0-11
+      const currentYear = today.getFullYear();
+      
+      // Parse the date from format "9.3." or similar
+      const parts = expiresAt.split('.');
+      if (parts.length < 2) {
+        return false;
+      }
+      
+      const expireDay = parseInt(parts[0]);
+      const expireMonth = parseInt(parts[1]);
+      
+      // Create comparison: if no year is specified, assume current year
+      const expireYear = currentYear;
+      
+      // Compare dates
+      if (expireMonth < currentMonth) {
+        return true; // Already passed this month
+      } else if (expireMonth === currentMonth && expireDay < currentDay) {
+        return true; // Same month but day has passed
+      }
+      
+      return false; // Not expired yet
+    }
+    
     // Track which quests are currently sent by scraper
     const currentQuestIds = new Set(quests.map(q => q.id));
     
     // Find quests that were active but are no longer sent (expired)
     const expiredQuestsList = [];
     knownQuests.forEach((quest, questId) => {
-      if (!currentQuestIds.has(questId)) {
+      // Only mark as expired if it's actually past the expiration date
+      if (!currentQuestIds.has(questId) && isQuestActuallyExpired(quest.expiresAt)) {
         expiredQuestsList.push(quest);
         // Move to expired quests
         expiredQuests.set(questId, quest);
