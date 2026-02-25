@@ -85,56 +85,170 @@ function extractQuestsFromHTML(html) {
   // Debug: Check if HTML contains quest content
   if (!html.includes('quest-tile')) {
     console.log('⚠️  HTML does not contain quest tiles');
+    console.log(`📄 HTML length: ${html.length} characters`);
+    // Check if it's a login page
+    if (html.includes('login') || html.includes('signin')) {
+      console.log('❌ HTML appears to be a login page - token may be invalid or expired');
+    }
     return quests;
   }
   
-  // Match all quest tiles more robustly
-  const questTileRegex = /id="quest-tile-(\d+)"[\s\S]*?</g;
+  // Extract quest tiles more robustly using a different approach
+  // Match the complete div container for each quest
+  const questTileRegex = /<div[^>]*id="quest-tile-(\d+)"[^>]*class="[^"]*questTile[^"]*"[^>]*>[\s\S]*?<\/div>\s*(?=<div[^>]*id="quest-tile-|$)/g;
   
-  // Find all quest tile IDs
-  const tileMatches = [...html.matchAll(/id="quest-tile-(\d+)"/g)];
-  console.log(`📍 Found ${tileMatches.length} quest tiles in HTML`);
+  const allMatches = [...html.matchAll(questTileRegex)];
+  console.log(`📍 Found ${allMatches.length} quest tile divs in HTML`);
   
-  for (const tileMatch of tileMatches) {
+  // Alternative: Use a simpler approach - find all quest tile IDs first
+  const questIdMatches = [...html.matchAll(/id="quest-tile-(\d+)"/g)];
+  console.log(`📊 Found ${questIdMatches.length} quest IDs in HTML`);
+  
+  let skippedCount = 0;
+  let processedCount = 0;
+  
+  for (let i = 0; i < questIdMatches.length; i++) {
+    const tileMatch = questIdMatches[i];
     const questId = tileMatch[1];
     const tileStart = tileMatch.index;
-    const nextTileIndex = html.indexOf('id="quest-tile-', tileStart + 1);
-    const tileEnd = nextTileIndex === -1 ? html.length : nextTileIndex;
-    const tileSection = html.substring(tileStart, tileEnd);
     
-    // Check if quest is active (button NOT disabled)
-    const isExpired = tileSection.includes('disabled=""') || tileSection.includes('disabled=');
-    if (isExpired) {
-      console.log(`  ⏰ Quest ${questId} is expired (skipping)`);
-      continue;
+    // Debug: Log specific quest IDs we're looking for
+    if (['1473407935970410724', '1471215421297266778', '1471627613574533173', '1471589719186870377'].includes(questId)) {
+      console.log(`  🔍 Processing quest ${questId}...`);
     }
     
-    // Extract quest name from h2 tag
-    const nameMatch = tileSection.match(/<h2[^>]*>([^<]+)<\/h2>/);
-    const questName = nameMatch ? nameMatch[1].trim() : 'Unknown';
+    // Find the end of this quest tile - look for the next "quest-tile" OR the closing div
+    // Search more carefully to find where this specific quest container ends
+    let tileEnd;
+    if (i < questIdMatches.length - 1) {
+      // There's a next quest - find where this one ends before the next one starts
+      const nextTileStart = questIdMatches[i + 1].index;
+      // Go back from nextTileStart to find the closing </div> that belongs to this quest
+      let searchStart = nextTileStart - 1;
+      let divCount = 0;
+      while (searchStart > tileStart) {
+        if (html[searchStart] === '>' && html[searchStart - 1] === '/' && html[searchStart - 2] === 'v' && html[searchStart - 3] === 'i' && html[searchStart - 4] === 'd') {
+          divCount++;
+          if (divCount >= 1) {
+            tileEnd = searchStart + 1;
+            break;
+          }
+        }
+        searchStart--;
+      }
+      if (!tileEnd) tileEnd = nextTileStart;
+    } else {
+      // Last quest - include everything until the end
+      tileEnd = html.length;
+    }
     
-    // Extract reward (Orbs)
-    const orbMatch = tileSection.match(/Discord Orbs<|>(\d+)<.*?Discord Orbs|Discord Orbs<\/div>[\s\S]*?(\d+)[\s\S]*?Discord Orbs/);
-    let orbsAmount = 700; // Default to 700
+    const tileSection = html.substring(tileStart, tileEnd);
     
-    // Try different patterns
-    if (tileSection.includes('Discord Orbs')) {
-      const orbPattern = tileSection.match(/>(\d+)<.*?Discord Orbs/);
-      if (orbPattern) {
-        orbsAmount = parseInt(orbPattern[1]);
+    // Debug: Show what we extracted
+    if (tileSection.length < 100) {
+      console.log(`  ⚠️  Quest ${questId} has very short extraction (${tileSection.length} chars) - might be parsing error`);
+    }
+    
+    // Debug: Check if button element exists
+    const hasButton = tileSection.includes('<button');
+    if (!hasButton) {
+      console.log(`  ⚠️  Quest ${questId} - No button element found in tile section`);
+    }
+    
+    // Extract quest name - try multiple patterns
+    let questName = 'Unknown';
+    const nameMatch = tileSection.match(/<h2[^>]*class="[^"]*questName[^"]*"[^>]*>([^<]+)<\/h2>/);
+    if (nameMatch) {
+      questName = nameMatch[1].trim();
+    } else {
+      // Fallback: look for any h2 tag
+      const h2Match = tileSection.match(/<h2[^>]*>([^<]+)<\/h2>/);
+      if (h2Match) {
+        questName = h2Match[1].trim();
       }
     }
     
-    // Extract expiration date
-    const expireMatch = tileSection.match(/Endet\s+(\d+\.\d+\.)/);
-    const expiresAt = expireMatch ? expireMatch[1] : 'Unknown';
+    // Log EVERY quest found, regardless of status
+    console.log(`  📌 Quest ${questId}: ${questName}`);
     
-    // Extract button text to determine quest type
-    const buttonMatch = tileSection.match(/<span[^>]*class="lineClamp1[^"]*"[^>]*>([^<]+)<\/span>/);
-    const buttonText = buttonMatch ? buttonMatch[1].trim() : 'Unknown';
+    // Extract reward (Orbs) - try multiple patterns
+    let orbsAmount = 700; // Default to 700
+    
+    // Pattern 1: Look for the number before "Discord Orbs"
+    const orbPattern1 = tileSection.match(/>(\d+)<[^>]*>Discord Orbs/);
+    if (orbPattern1) {
+      orbsAmount = parseInt(orbPattern1[1]);
+    } else {
+      // Pattern 2: More flexible pattern
+      const orbPattern2 = tileSection.match(/(\d+)\s*(?:<[^>]*>)*Discord Orbs/);
+      if (orbPattern2) {
+        orbsAmount = parseInt(orbPattern2[1]);
+      }
+    }
+    
+    // Extract expiration date - look for "Endet" or "Quest endet am"
+    let expiresAt = 'Unknown';
+    const expireMatch1 = tileSection.match(/Endet\s+(\d+\.\d+\.)/);
+    if (expireMatch1) {
+      expiresAt = expireMatch1[1];
+    } else {
+      // Also try "Quest endet am" pattern
+      const expireMatch2 = tileSection.match(/Quest endet am\s+(\d+\.\d+\.)/);
+      if (expireMatch2) {
+        expiresAt = expireMatch2[1];
+      }
+    }
+    
+    // Extract button text - look for the actual button text
+    let buttonText = 'Unknown';
+    
+    // Pattern 1: Look for span with specific class inside button (for "Quest annehmen" buttons)
+    const buttonMatch1 = tileSection.match(/<button[^>]*>[\s\S]*?<span[^>]*class="[^"]*lineClamp1[^"]*"[^>]*>([^<]+)<\/span>/);
+    if (buttonMatch1) {
+      buttonText = buttonMatch1[1].trim();
+    } else {
+      // Pattern 2: Just find any span with lineClamp1 class (for "Quest annehmen" buttons)
+      const buttonMatch2 = tileSection.match(/<span[^>]*class="[^"]*lineClamp1[^"]*"[^>]*>([^<]+)<\/span>/);
+      if (buttonMatch2) {
+        buttonText = buttonMatch2[1].trim();
+      } else {
+        // Pattern 3: Look for hiddenVisually span (for "Video-Quest starten" buttons with different structure)
+        const buttonMatch3 = tileSection.match(/<span[^>]*class="[^"]*hiddenVisually[^"]*"[^>]*>([^<]+)<\/span>/);
+        if (buttonMatch3) {
+          buttonText = buttonMatch3[1].trim();
+        }
+      }
+    }
+    
+    // Debug: Show button text for problematic quests
+    if (['1473407935970410724', '1471215421297266778', '1471627613574533173', '1471589719186870377', '1470483893688991745'].includes(questId)) {
+      console.log(`  🔍 Quest ${questId} extracted button text: "${buttonText}"`);
+    }
+    
+    // Check if quest is expired by looking for expiration text in button
+    // Only skip if button text is EXACTLY an expiration phrase, not if it just contains those words
+    // German: "Quest endet am X.X." / English: "Ends on X.X." or similar
+    const isExpiredQuest = buttonText.match(/^(Quest )?endet am \d+\.\d+\.$/) || buttonText.match(/^Ends? on \d+\.\d+\.?$/);
+    if (isExpiredQuest) {
+      console.log(`  ⏰ Quest ${questId} expired: "${buttonText}" (skipping)`);
+      skippedCount++;
+      continue;
+    }
+    
+    // Log if we're processing a previously missing quest
+    if (['1473407935970410724', '1471215421297266778', '1471627613574533173', '1471589719186870377'].includes(questId)) {
+      console.log(`  ✅ Found missing quest ${questId} with button: "${buttonText}"`);
+    }
+    
     const questType = parseQuestTypeFromButton(buttonText);
     
-    console.log(`  ✓ Found active quest: ${questName} (Expires: ${expiresAt})`);
+    if (questName === 'Unknown' || buttonText === 'Unknown') {
+      console.log(`  ⚠️  Quest ${questId} - Failed to extract full info (name: ${questName}, button: "${buttonText}")`);
+      // Debug: Show first 500 chars of tile section
+      console.log(`     Section preview: ${tileSection.substring(0, 500)}`);
+    }
+    
+    console.log(`  ✓ Found active quest: ${questName} (Expires: ${expiresAt}, Type: ${questType})`);
     
     quests.push({
       id: questId,
@@ -144,7 +258,10 @@ function extractQuestsFromHTML(html) {
       type: questType,
       buttonLabel: buttonText
     });
+    processedCount++;
   }
+  
+  console.log(`📈 Processed: ${processedCount} active, Skipped: ${skippedCount} expired`);
   
   return quests;
 }
@@ -153,33 +270,74 @@ async function fetchQuests() {
   try {
     let localBrowser;
     try {
-      localBrowser = await puppeteer.launch({
+      console.log('🔍 Scanning for new quests...');
+      console.log('📄 Launching Puppeteer browser...');
+      console.log(`⏱️  Browser launch timeout: 60 seconds`);
+      
+      // Add explicit timeout for browser launch
+      const launchPromise = puppeteer.launch({
         headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-web-resources',
+          '--disable-extensions'
+        ],
+        timeout: 60000
       });
 
-      console.log('🔍 Scanning for new quests...');
+      localBrowser = await Promise.race([
+        launchPromise,
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Puppeteer launch timeout (60s)')), 65000)
+        )
+      ]);
+
+      console.log('✅ Browser launched successfully');
       console.log('📄 Opening Discord Quests page...');
       const page = await localBrowser.newPage();
+      
+      // Add a timeout handler
+      page.on('error', (error) => {
+        console.error('❌ Page error:', error);
+      });
 
       // Set token in local storage before navigation
       await page.evaluateOnNewDocument((token) => {
         localStorage.setItem('token', `"${token}"`);
       }, USER_TOKEN);
 
-      // Navigate to quest page
+      // Navigate to quest page with better error handling
+      console.log(`🌐 Navigating to ${QUEST_PAGE_URL}...`);
       try {
-        await page.goto(QUEST_PAGE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        const response = await page.goto(QUEST_PAGE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        console.log(`📥 Page response status: ${response?.status()}`);
+        if (!response || !response.ok()) {
+          console.log(`⚠️  Warning: Page returned status ${response?.status()}`);
+        }
       } catch (error) {
+        console.error('❌ Navigation error details:', error.message);
         console.log('⚠️  Discord Quests page load timeout, continuing anyway...');
       }
 
-      // Wait for quests to load
+      // Wait for quests to load - try to wait for specific elements
+      try {
+        await page.waitForSelector('[id^="quest-tile-"]', { timeout: 5000 });
+      } catch (error) {
+        console.log('⚠️  Quest tiles did not load within timeout');
+      }
+
+      // Give it extra time to render
       await new Promise(resolve => setTimeout(resolve, 3000));
 
       // Get page HTML
       const html = await page.content();
       await page.close();
+
+      // Save HTML for debugging
+      const debugFile = path.join(__dirname, 'quests_debug.html');
+      fs.writeFileSync(debugFile, html, 'utf-8');
+      console.log(`📝 HTML saved to ${debugFile} for debugging`);
 
       // Parse active quests from HTML
       const activeQuests = extractQuestsFromHTML(html);
@@ -231,6 +389,10 @@ async function fetchQuests() {
 
     } catch (error) {
       console.error('❌ Error in fetchQuests:', error.message);
+      console.error('🔍 Full error details:', error.toString());
+      if (error.stack) {
+        console.error('📍 Stack trace:', error.stack);
+      }
     } finally {
       // Always close browser after scan
       if (localBrowser) {
