@@ -281,7 +281,9 @@ async function fetchQuests() {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-web-resources',
-          '--disable-extensions'
+          '--disable-extensions',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-dev-shm-usage'
         ],
         timeout: 60000
       });
@@ -297,12 +299,27 @@ async function fetchQuests() {
       console.log('📄 Opening Discord Quests page...');
       const page = await localBrowser.newPage();
       
+      // Mask the browser as a normal Chrome browser
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+      
+      // Stealth mode - remove webdriver property
+      await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => false,
+        });
+      });
+      
       // Add a timeout handler
       page.on('error', (error) => {
         console.error('❌ Page error:', error);
       });
 
-      // Set token in local storage before navigation
+      // Set token in authorization header AND local storage
+      await page.setExtraHTTPHeaders({
+        'Authorization': USER_TOKEN
+      });
+
+      // Also set token in local storage for good measure
       await page.evaluateOnNewDocument((token) => {
         localStorage.setItem('token', `"${token}"`);
       }, USER_TOKEN);
@@ -327,12 +344,26 @@ async function fetchQuests() {
         console.log('⚠️  Quest tiles did not load within timeout');
       }
 
-      // Give it extra time to render
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
       // Get page HTML
       const html = await page.content();
       await page.close();
+
+      // Debug: Check if we're on login page
+      if (html.includes('login') || html.includes('signin') || html.includes('You are being redirected')) {
+        console.error('❌ ERROR: Page appears to be a login page - authentication failed!');
+        console.error('   This means the USER_TOKEN in .env is invalid or expired.');
+        console.log('📋 To fix this:');
+        console.log('   1. Go to https://discord.com');
+        console.log('   2. Open Developer Tools (F12) → Application → Local Storage');
+        console.log('   3. Find the "token" key');
+        console.log('   4. Copy the full token value (without quotes)');
+        console.log('   5. Update USER_TOKEN in .env');
+        // Still save the HTML for debugging
+        const debugFile = path.join(__dirname, 'quests_debug.html');
+        fs.writeFileSync(debugFile, html, 'utf-8');
+        console.log(`📝 HTML saved to ${debugFile} for debugging`);
+        return;
+      }
 
       // Save HTML for debugging
       const debugFile = path.join(__dirname, 'quests_debug.html');
