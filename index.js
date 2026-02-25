@@ -44,6 +44,9 @@ let paginationState = new Map(); // Track pagination state: messageId -> { page,
 
 const SCAN_INTERVAL = process.env.SCAN_INTERVAL || 60000; // 1 minute default
 
+// Version from environment variable
+const BOT_VERSION = process.env.BOT_VERSION || '1.0.0'; // Get from .env or use fallback
+
 // Load persistent data
 function loadData() {
   try {
@@ -887,7 +890,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           }
         ],
         footer: {
-          text: 'QuestHunter v1.0.0',
+          text: `QuestHunter v${BOT_VERSION}`,
           icon_url: 'https://i.imgur.com/yTgBkjM.png'
         },
         timestamp: new Date().toISOString()
