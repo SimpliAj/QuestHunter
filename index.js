@@ -676,7 +676,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         });
       }
 
-      // Get the most recently detected quest (by detectedAt timestamp)
+      // Get the most recently added quest (by detectedAt timestamp - most recent first)
       const lastQuest = Array.from(knownQuests.values()).sort((a, b) => {
         const timeA = new Date(a.detectedAt || 0).getTime();
         const timeB = new Date(b.detectedAt || 0).getTime();
@@ -686,7 +686,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const questLink = `https://discord.com/quests/${lastQuest.id}`;
 
       await interaction.reply({ 
-        content: questLink, 
+        content: `**Latest Quest Added**: ${lastQuest.name}\n${questLink}`, 
         ephemeral: true 
       });
     }
@@ -791,10 +791,19 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
     }
 
     if (interaction.commandName === 'help') {
+      // Build quest commands field based on spoofguide setting
+      let questCommandsValue = '`/latestquest` - Show latest detected quest\n`/activequests` - List all active quests\n`/expiredquests` - List all expired quests';
+      
+      if (process.env.ENABLE_SPOOFGUIDE !== 'false') {
+        questCommandsValue += '\n`/spoofguide` - Get QuestPhantom guide';
+      }
+
       const helpEmbed = {
         color: 0x5865F2,
         title: '❓ QuestHunter Commands',
-        description: 'All available commands for QuestHunter',
+        description: process.env.ENABLE_SPOOFGUIDE === 'false' 
+          ? '✨ QuestHunter is optimized for **QuestPhantom** users\n\nAll available commands for QuestHunter'
+          : 'All available commands for QuestHunter',
         fields: [
           {
             name: '⚙️ Admin Commands',
@@ -808,12 +817,17 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           },
           {
             name: '🎯 Quest Commands',
-            value: '`/latestquest` - Show latest detected quest\n`/activequests` - List all active quests\n`/expiredquests` - List all expired quests\n`/spoofguide` - Get QuestPhantom guide',
+            value: questCommandsValue,
             inline: false
           },
           {
             name: '🗳️ Support QuestHunter',
             value: '[Vote on top.gg](https://top.gg/de/bot/1474123878002462801/vote)',
+            inline: false
+          },
+          {
+            name: '💻 Source Code',
+            value: '[GitHub Repository](https://github.com/SimpliAj/QuestHunter)',
             inline: false
           }
         ],
@@ -836,6 +850,16 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const totalTrackedQuests = knownQuests.size + expiredQuests.size; // All quests ever
       const activeQuests = knownQuests.size; // Only active quests
       
+      // Calculate total tracked orbs from all active quests
+      let totalTrackedOrbs = 0;
+      for (const quest of knownQuests.values()) {
+        // Extract orb amount from reward string like "700 Discord Orbs"
+        const orbMatch = quest.reward?.match(/(\d+)/);
+        if (orbMatch) {
+          totalTrackedOrbs += parseInt(orbMatch[1]);
+        }
+      }
+      
       const statsEmbed = {
         color: 0x5865F2,
         title: '📊 Bot Statistics',
@@ -854,7 +878,12 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           {
             name: '✨ Active Quests',
             value: activeQuests.toString(),
-            inline: false
+            inline: true
+          },
+          {
+            name: '<:orbs:1476345614412288040> Total Tracked Orbs',
+            value: totalTrackedOrbs.toLocaleString(),
+            inline: true
           }
         ],
         footer: {
@@ -1606,7 +1635,7 @@ app.post('/webhook/quests', async (req, res) => {
         console.log(`  ℹ️  EXISTING: ${quest.name}`);
       }
       
-      // Only update quest data for new quests
+      // Only update quest data for new quests (to keep original detection time)
       // For existing quests, they're already in knownQuests
       if (isNew) {
         knownQuests.set(quest.id, {
