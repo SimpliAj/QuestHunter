@@ -171,46 +171,50 @@ function extractQuestsFromHTML(html) {
     // Log EVERY quest found, regardless of status
     console.log(`  📌 Quest ${questId}: ${questName}`);
     
-    // Extract reward - can be Discord Orbs or other rewards
-    let reward = '700 Discord Orbs'; // Default to 700 Discord Orbs
+    // Extract reward - MUST match one of the patterns, NO FALLBACK
+    let reward = null;
     
-    // Pattern 1: Look for "X Discord Orbs"
-    const orbPattern1 = tileSection.match(/>(\d+)<[^>]*>Discord Orbs/);
-    if (orbPattern1) {
-      const orbsAmount = parseInt(orbPattern1[1]);
+    // The HTML structure is:
+    // For Orbs: <span>NUMBER</span> Discord Orbs
+    // For other rewards: <span>REWARD_NAME</span> beanspruchen
+    
+    // Pattern 1: Discord Orbs - exact match with closing tag
+    const orbPattern = tileSection.match(/>(\d+)<\/span>\s*Discord Orbs/);
+    if (orbPattern) {
+      const orbsAmount = parseInt(orbPattern[1]);
       reward = `${orbsAmount} Discord Orbs`;
-    } else {
-      // Pattern 2: More flexible pattern for Discord Orbs
-      const orbPattern2 = tileSection.match(/(\d+)\s*(?:<[^>]*>)*Discord Orbs/);
-      if (orbPattern2) {
-        const orbsAmount = parseInt(orbPattern2[1]);
-        reward = `${orbsAmount} Discord Orbs`;
-      } else {
-        // Pattern 3: Look for other reward types (e.g., Profile Decoration, Custom Avatar, etc.)
-        const otherRewardPatterns = [
-          /Profil(?:decoration|dekoration)/i,
-          /Custom Avatar/i,
-          /Avatar/i,
-          /Badge/i,
-          /Dekoration/i,
-          /Theme/i,
-          /Special/i
-        ];
-        
-        for (const pattern of otherRewardPatterns) {
-          if (pattern.test(tileSection)) {
-            // Extract the reward name more precisely
-            const rewardMatch = tileSection.match(/>(Profildekoration|Custom Avatar|Avatar|Badge|Dekoration|Theme|Special[^<]*)<\/div>/i);
-            if (rewardMatch) {
-              reward = rewardMatch[1];
-              break;
-            }
-            // Fallback: just use the pattern name
-            reward = pattern.source.split('\\')[0];
-            break;
-          }
+      console.log(`  💰 ${questName}: ${orbsAmount} Discord Orbs`);
+    }
+    
+    // Pattern 2: Non-Orb reward - text between opening and closing span in header context
+    if (!reward) {
+      // Look for span in the header section that contains the reward text
+      // The pattern is: <span class="text-md/semibold_cf4812 header__956c6"...>REWARD_TEXT</span> beanspruchen
+      const rewardSpanMatch = tileSection.match(/header__956c6[^>]*>([^<]+)<\/span>\s+beanspruchen/);
+      if (rewardSpanMatch) {
+        reward = rewardSpanMatch[1].trim();
+        console.log(`  🎁 ${questName}: ${reward}`);
+      }
+    }
+    
+    // Pattern 3: Alternative for non-Orb rewards where text appears in first span after "Beanspruche"
+    if (!reward) {
+      const beanspruchMatch = tileSection.match(/Beanspruche\s+<span[^>]*>([^<]+)<\/span>/);
+      if (beanspruchMatch) {
+        const potentialReward = beanspruchMatch[1].trim();
+        // Make sure it's not just styling information
+        if (potentialReward && !potentialReward.startsWith('style=') && potentialReward.length > 2) {
+          reward = potentialReward;
+          console.log(`  🎁 ${questName}: ${reward}`);
         }
       }
+    }
+    
+    // If still no reward found, log critical error but don't use fallback
+    if (!reward) {
+      console.error(`  ❌ CRITICAL: Could not extract reward for quest ${questId} (${questName})`);
+      console.error(`     First 200 chars of tile: ${tileSection.substring(0, 200)}`);
+      continue; // Skip this quest entirely instead of using fallback
     }
     
     // Extract expiration date - look for "Endet" or "Quest endet am"
