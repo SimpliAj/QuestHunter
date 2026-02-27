@@ -719,7 +719,22 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         });
       }
 
-      const quests = Array.from(expiredQuests.values());
+      // Sort quests from latest to oldest by expiration date
+      const quests = Array.from(expiredQuests.values()).sort((a, b) => {
+        // Parse dates - they're in format "20.2." or "3/6/2026"
+        const parseDate = (dateStr) => {
+          if (dateStr.includes('/')) {
+            // Format: 3/6/2026
+            return new Date(dateStr);
+          } else {
+            // Format: 20.2. (assume current or last year)
+            const [day, month] = dateStr.split('.');
+            const year = 2026;
+            return new Date(year, parseInt(month) - 1, parseInt(day));
+          }
+        };
+        return parseDate(b.expiresAt) - parseDate(a.expiresAt); // Descending (latest first)
+      });
       const QUESTS_PER_PAGE = 20;
       const totalPages = Math.ceil(quests.length / QUESTS_PER_PAGE);
       
@@ -730,9 +745,14 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         const pageQuests = quests.slice(startIdx, endIdx);
         
         const fields = pageQuests.map((q, i) => {
+          let expiryText = q.expiresAt;
+          if (q.deletedByDiscord) {
+            expiryText = "Deleted by Discord";
+          }
+          const value = `**Reward:** ${q.reward || 'Unknown'}\n**Expired:** ${expiryText}`;
           return {
             name: `${startIdx + i + 1}. ${q.name}`,
-            value: `**Reward:** ${q.reward || 'Unknown'}\n**Expired:** ${q.expiresAt}`,
+            value: value,
             inline: false
           };
         });
@@ -853,10 +873,41 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const totalTrackedQuests = knownQuests.size + expiredQuests.size; // All quests ever
       const activeQuests = knownQuests.size; // Only active quests
       
-      // Calculate total tracked orbs and decorations from all active quests
+      // Calculate available orbs and decorations from ACTIVE quests only
+      let availableOrbs = 0;
+      let availableDecorations = 0;
+      
+      for (const quest of knownQuests.values()) {
+        if (quest.reward?.toLowerCase().includes('decoration') || quest.reward?.toLowerCase().includes('dekoration')) {
+          availableDecorations++;
+        } else {
+          const orbMatch = quest.reward?.match(/(\d+)/);
+          if (orbMatch) {
+            availableOrbs += parseInt(orbMatch[1]);
+          }
+        }
+      }
+      
+      // Calculate total tracked orbs and decorations from ALL quests (active + expired)
       let totalTrackedOrbs = 0;
       let totalTrackedDecorations = 0;
+      
+      // Count from active quests
       for (const quest of knownQuests.values()) {
+        // Check if reward is decorations or similar
+        if (quest.reward?.toLowerCase().includes('decoration') || quest.reward?.toLowerCase().includes('dekoration')) {
+          totalTrackedDecorations++;
+        } else {
+          // Extract orb amount from reward string like "700 Discord Orbs" or "200 Discord Orbs"
+          const orbMatch = quest.reward?.match(/(\d+)/);
+          if (orbMatch) {
+            totalTrackedOrbs += parseInt(orbMatch[1]);
+          }
+        }
+      }
+      
+      // Also count from expired quests
+      for (const [, quest] of expiredQuests) {
         // Check if reward is decorations or similar
         if (quest.reward?.toLowerCase().includes('decoration') || quest.reward?.toLowerCase().includes('dekoration')) {
           totalTrackedDecorations++;
@@ -875,8 +926,13 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         description: 'QuestHunter Performance Metrics',
         fields: [
           {
-            name: '🌐 Servers',
-            value: totalServers.toString(),
+            name: '═══ QUESTS ═══',
+            value: '** **',
+            inline: false
+          },
+          {
+            name: '✨ Active Quests',
+            value: activeQuests.toString(),
             inline: true
           },
           {
@@ -885,23 +941,38 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             inline: true
           },
           {
-            name: '✨ Active Quests',
-            value: activeQuests.toString(),
+            name: '═══ Available to Earn ═══',
+            value: '** **',
+            inline: false
+          },
+          {
+            name: '<:orbs:1476345614412288040> Orbs',
+            value: availableOrbs.toLocaleString(),
             inline: true
           },
           {
-            name: '<:orbs:1476345614412288040> Total Tracked Orbs',
+            name: '🎨 Decorations',
+            value: availableDecorations.toString(),
+            inline: true
+          },
+          {
+            name: '═══ Total Tracked ═══',
+            value: '** **',
+            inline: false
+          },
+          {
+            name: '<:orbs:1476345614412288040> Orbs',
             value: totalTrackedOrbs.toLocaleString(),
             inline: true
           },
           {
-            name: '🎨 Total Tracked Decorations',
+            name: '🎨 Decorations',
             value: totalTrackedDecorations.toString(),
             inline: true
           }
         ],
         footer: {
-          text: `QuestHunter v${BOT_VERSION}`,
+          text: `QuestHunter v${BOT_VERSION} • Helping ${totalServers} Servers`,
           icon_url: 'https://i.imgur.com/yTgBkjM.png'
         },
         timestamp: new Date().toISOString()
