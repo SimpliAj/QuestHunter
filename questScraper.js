@@ -171,18 +171,45 @@ function extractQuestsFromHTML(html) {
     // Log EVERY quest found, regardless of status
     console.log(`  📌 Quest ${questId}: ${questName}`);
     
-    // Extract reward (Orbs) - try multiple patterns
-    let orbsAmount = 700; // Default to 700
+    // Extract reward - can be Discord Orbs or other rewards
+    let reward = '700 Discord Orbs'; // Default to 700 Discord Orbs
     
-    // Pattern 1: Look for the number before "Discord Orbs"
+    // Pattern 1: Look for "X Discord Orbs"
     const orbPattern1 = tileSection.match(/>(\d+)<[^>]*>Discord Orbs/);
     if (orbPattern1) {
-      orbsAmount = parseInt(orbPattern1[1]);
+      const orbsAmount = parseInt(orbPattern1[1]);
+      reward = `${orbsAmount} Discord Orbs`;
     } else {
-      // Pattern 2: More flexible pattern
+      // Pattern 2: More flexible pattern for Discord Orbs
       const orbPattern2 = tileSection.match(/(\d+)\s*(?:<[^>]*>)*Discord Orbs/);
       if (orbPattern2) {
-        orbsAmount = parseInt(orbPattern2[1]);
+        const orbsAmount = parseInt(orbPattern2[1]);
+        reward = `${orbsAmount} Discord Orbs`;
+      } else {
+        // Pattern 3: Look for other reward types (e.g., Profile Decoration, Custom Avatar, etc.)
+        const otherRewardPatterns = [
+          /Profil(?:decoration|dekoration)/i,
+          /Custom Avatar/i,
+          /Avatar/i,
+          /Badge/i,
+          /Dekoration/i,
+          /Theme/i,
+          /Special/i
+        ];
+        
+        for (const pattern of otherRewardPatterns) {
+          if (pattern.test(tileSection)) {
+            // Extract the reward name more precisely
+            const rewardMatch = tileSection.match(/>(Profildekoration|Custom Avatar|Avatar|Badge|Dekoration|Theme|Special[^<]*)<\/div>/i);
+            if (rewardMatch) {
+              reward = rewardMatch[1];
+              break;
+            }
+            // Fallback: just use the pattern name
+            reward = pattern.source.split('\\')[0];
+            break;
+          }
+        }
       }
     }
     
@@ -253,7 +280,7 @@ function extractQuestsFromHTML(html) {
     quests.push({
       id: questId,
       name: questName,
-      orbs: orbsAmount,
+      reward: reward,
       expiresAt,
       type: questType,
       buttonLabel: buttonText
