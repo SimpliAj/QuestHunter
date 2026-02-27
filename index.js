@@ -853,13 +853,19 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const totalTrackedQuests = knownQuests.size + expiredQuests.size; // All quests ever
       const activeQuests = knownQuests.size; // Only active quests
       
-      // Calculate total tracked orbs from all active quests
+      // Calculate total tracked orbs and decorations from all active quests
       let totalTrackedOrbs = 0;
+      let totalTrackedDecorations = 0;
       for (const quest of knownQuests.values()) {
-        // Extract orb amount from reward string like "700 Discord Orbs"
-        const orbMatch = quest.reward?.match(/(\d+)/);
-        if (orbMatch) {
-          totalTrackedOrbs += parseInt(orbMatch[1]);
+        // Check if reward is decorations or similar
+        if (quest.reward?.toLowerCase().includes('decoration') || quest.reward?.toLowerCase().includes('dekoration')) {
+          totalTrackedDecorations++;
+        } else {
+          // Extract orb amount from reward string like "700 Discord Orbs" or "200 Discord Orbs"
+          const orbMatch = quest.reward?.match(/(\d+)/);
+          if (orbMatch) {
+            totalTrackedOrbs += parseInt(orbMatch[1]);
+          }
         }
       }
       
@@ -886,6 +892,11 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           {
             name: '<:orbs:1476345614412288040> Total Tracked Orbs',
             value: totalTrackedOrbs.toLocaleString(),
+            inline: true
+          },
+          {
+            name: '🎨 Total Tracked Decorations',
+            value: totalTrackedDecorations.toString(),
             inline: true
           }
         ],
