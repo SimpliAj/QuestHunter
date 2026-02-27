@@ -416,7 +416,7 @@ async function fetchQuests() {
       const questsToSend = activeQuests.map(quest => ({
         id: quest.id,
         name: quest.name,
-        reward: `${quest.orbs} Discord Orbs`,
+        reward: quest.reward,  // Already extracted correctly (200 Orbs, 2400 Orbs, Decoration, etc.)
         type: quest.type,
         buttonLabel: quest.buttonLabel,
         expiresAt: quest.expiresAt,
