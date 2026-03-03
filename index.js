@@ -28,6 +28,13 @@ const QUESTS_FILE = path.join(DATA_DIR, 'known_quests.json');
 const EXPIRED_QUESTS_FILE = path.join(DATA_DIR, 'expired_quests.json');
 const GUILDS_FILE = path.join(DATA_DIR, 'guild_settings.json');
 const USER_PREFS_FILE = path.join(DATA_DIR, 'user_preferences.json');
+const SHARED_CODES_FILE = path.join(DATA_DIR, 'shared_codes.json');
+
+// Channel ID for sharing codes
+const SHARE_CHANNEL_ID = process.env.SHARE_CHANNEL_ID || '1478482005598539959';
+
+// Track shared codes for button persistence
+let sharedCodes = new Map(); // { messageId: { questId, questName, code, sharedBy, sharedAt } }
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -88,6 +95,16 @@ function loadData() {
   } catch (error) {
     console.error('⚠️  Error loading user preferences file:', error.message);
   }
+
+  try {
+    if (fs.existsSync(SHARED_CODES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SHARED_CODES_FILE, 'utf-8'));
+      sharedCodes = new Map(data);
+      console.log(`✅ Loaded ${sharedCodes.size} shared codes from file`);
+    }
+  } catch (error) {
+    console.error('⚠️  Error loading shared codes file:', error.message);
+  }
 }
 
 // Save persistent data
@@ -97,6 +114,7 @@ function saveData() {
     fs.writeFileSync(EXPIRED_QUESTS_FILE, JSON.stringify(Array.from(expiredQuests.entries())), 'utf-8');
     fs.writeFileSync(GUILDS_FILE, JSON.stringify(Array.from(guildSettings.entries())), 'utf-8');
     fs.writeFileSync(USER_PREFS_FILE, JSON.stringify(Array.from(userPreferences.entries())), 'utf-8');
+    fs.writeFileSync(SHARED_CODES_FILE, JSON.stringify(Array.from(sharedCodes.entries())), 'utf-8');
   } catch (error) {
     console.error('❌ Error saving data:', error.message);
   }
@@ -339,6 +357,25 @@ async function registerSlashCommands() {
     {
       name: 'dm-notifications',
       description: 'Toggle DM notifications for new quests',
+    },
+    {
+      name: 'share',
+      description: 'Share game codes or items from active quests',
+      options: [
+        {
+          name: 'quest',
+          description: 'Select the quest for the game code',
+          type: 3, // STRING type for autocomplete
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: 'code',
+          description: 'The game code or reward to share',
+          type: 3, // STRING type
+          required: true,
+        },
+      ],
     }
   );
 
@@ -556,6 +593,24 @@ client.on('interactionCreate', async (interaction) => {
         } else {
           await interaction.respond([]);
         }
+      }
+    } else if (interaction.commandName === 'share') {
+      const focusedOption = interaction.options.getFocused(true);
+      
+      if (focusedOption.name === 'quest') {
+        // Filter quests to only show game items (not Orbs or Profile Decorations)
+        const gameItemQuests = Array.from(knownQuests.values()).filter(q => {
+          const reward = q.reward?.toLowerCase() || '';
+          // Exclude typical non-game items
+          return !reward.includes('orb') && !reward.includes('decoration') && !reward.includes('badge');
+        });
+        
+        const choices = gameItemQuests.map(q => ({
+          name: `${q.name} - ${q.reward}`.substring(0, 100), // Max 100 chars
+          value: q.id
+        }));
+        
+        await interaction.respond(choices.slice(0, 25)); // Max 25 choices
       }
     }
     return;
@@ -1332,6 +1387,115 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       }
     }
 
+    if (interaction.commandName === 'share') {
+      const questId = interaction.options.getString('quest');
+      const code = interaction.options.getString('code');
+      
+      // Get quest details
+      const quest = knownQuests.get(questId);
+      if (!quest) {
+        return await interaction.reply({
+          content: '❌ Quest not found. Please select a valid quest.',
+          ephemeral: true,
+        });
+      }
+      
+      const questName = quest.name;
+      const questReward = quest.reward || 'Unknown Reward';
+      
+      // Create the embed for the channel
+      const shareEmbed = {
+        color: 0x2ECC71, // Green color for sharing
+        title: '🎁 Code Shared!',
+        description: `**Quest:** ${questName}\n**Reward:** ${questReward}`,
+        fields: [
+          {
+            name: '🔑 Code',
+            value: `\`\`\`${code}\`\`\``,
+            inline: false
+          },
+          {
+            name: '👤 Shared by',
+            value: `${interaction.user.username}#${interaction.user.discriminator}`,
+            inline: true
+          },
+          {
+            name: '⏰ Time',
+            value: new Date().toLocaleString(),
+            inline: true
+          }
+        ],
+        thumbnail: {
+          url: interaction.user.displayAvatarURL()
+        },
+        footer: {
+          text: 'QuestHunter Code Share',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+      
+      try {
+        // Send to channel
+        const channel = await client.channels.fetch(SHARE_CHANNEL_ID);
+        if (channel && channel.isTextBased()) {
+          // Create claim button
+          const claimButton = new ButtonBuilder()
+            .setCustomId(`claim_code_${questId}`)
+            .setLabel('🎁 Claim Code')
+            .setStyle(ButtonStyle.Success);
+
+          const row = new ActionRowBuilder().addComponents(claimButton);
+
+          const message = await channel.send({ embeds: [shareEmbed], components: [row] });
+          
+          // Save shared code info for button persistence after restart
+          sharedCodes.set(message.id, {
+            questId: questId,
+            questName: questName,
+            code: code,
+            sharedBy: `${interaction.user.username}#${interaction.user.discriminator}`,
+            sharedAt: new Date().toLocaleString()
+          });
+          saveData();
+        } else {
+          throw new Error('Channel not found or is not a text channel');
+        }
+        
+        // Confirm to user
+        const confirmEmbed = {
+          color: 0x2ECC71,
+          title: '✅ Code Shared Successfully',
+          description: `Your code for **${questName}** has been shared with the community!\n\n[Join our Discord](https://discord.gg/X5YKZBh9xV) to see shared codes and connect with other players!`,
+          fields: [
+            {
+              name: '🔑 Shared Code',
+              value: `\`\`\`${code}\`\`\``,
+              inline: false
+            }
+          ],
+          footer: {
+            text: 'QuestHunter',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+        
+        await interaction.reply({
+          embeds: [confirmEmbed],
+          ephemeral: true,
+        });
+        
+        console.log(`✅ Code shared for quest "${questName}" by ${interaction.user.tag}`);
+      } catch (error) {
+        console.error('❌ Error sharing code:', error.message);
+        await interaction.reply({
+          content: '❌ Failed to share code. Please try again later.',
+          ephemeral: true,
+        });
+      }
+    }
+
     if (interaction.commandName === 'dm-notifications') {
       const userId = interaction.user.id;
       const userPrefs = userPreferences.get(userId) || { dmNotifications: false };
@@ -1536,6 +1700,74 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
   try {
+    if (interaction.customId.startsWith('claim_code_')) {
+      const questId = interaction.customId.split('_')[2];
+      const messageId = interaction.message.id;
+      
+      // Get quest from knownQuests or from saved shared codes
+      let quest = knownQuests.get(questId);
+      let questName = 'Unknown Quest';
+      
+      if (quest) {
+        questName = quest.name;
+      } else if (sharedCodes.has(messageId)) {
+        // Quest might be expired, but we have the info saved
+        questName = sharedCodes.get(messageId).questName;
+      } else {
+        return await interaction.reply({
+          content: '❌ Quest information not found.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      // Get current embed
+      const currentEmbed = interaction.message.embeds[0];
+      
+      // Separate inline and non-inline fields from original embed
+      const originalFields = currentEmbed.fields || [];
+      const nonInlineFields = originalFields.filter(f => !f.inline);
+      const inlineFields = originalFields.filter(f => f.inline);
+      
+      // Create updated embed with claimed info - preserve description, title, color, etc
+      const claimedEmbed = {
+        title: currentEmbed.title,
+        description: currentEmbed.description, // Keep original description with quest name and reward
+        color: 0x9B59B6, // Purple color for claimed
+        fields: [
+          ...nonInlineFields, // Non-inline fields first (like Code)
+          ...inlineFields, // Then original inline fields (Shared by, Time)
+          {
+            name: '✅ Claimed by',
+            value: `${interaction.user.username}#${interaction.user.discriminator}`,
+            inline: true
+          },
+          {
+            name: '⏰ Claimed at',
+            value: new Date().toLocaleString(),
+            inline: true
+          }
+        ],
+        thumbnail: currentEmbed.thumbnail,
+        footer: currentEmbed.footer,
+        timestamp: currentEmbed.timestamp
+      };
+
+      // Remove button and update message
+      await interaction.update({
+        embeds: [claimedEmbed],
+        components: []
+      });
+
+      // Send confirmation to user
+      await interaction.followUp({
+        content: `✅ You claimed the code for **${questName}**!`,
+        ephemeral: true,
+      });
+
+      console.log(`✅ Code claimed for quest "${questName}" by ${interaction.user.tag}`);
+      return;
+    }
+
     if (interaction.customId.startsWith('toggle_dm_')) {
       const userId = interaction.customId.split('_')[2];
       
