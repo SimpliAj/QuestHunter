@@ -8,11 +8,140 @@ dotenv.config();
 
 const USER_TOKEN = process.env.USER_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://localhost:3001/webhook/quests';
+const ERROR_WEBHOOK = process.env.ERROR_WEBHOOK;
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
 const SCAN_INTERVAL = process.env.SCRAPER_INTERVAL || 3600000; // 1 hour default
+const USE_ACCOUNTS_FILE = process.env.USE_ACCOUNTS_FILE === 'true'; // Enable/disable accounts.txt
 
 const QUEST_PAGE_URL = 'https://discord.com/quest-home?sort=most_recent';
 const NOTIFIED_QUESTS_FILE = path.join(__dirname, 'data', 'notified_quests.json');
+const ACCOUNTS_FILE = path.join(__dirname, 'accounts.txt');
+const ACCOUNT_INDEX_FILE = path.join(__dirname, 'data', 'account_index.json');
+
+// Account rotation system
+let currentAccountIndex = 0;
+let allAccounts = [];
+
+// Load accounts from file
+function loadAccounts() {
+  if (!USE_ACCOUNTS_FILE) {
+    console.log('⚠️  USE_ACCOUNTS_FILE is disabled in .env - only using USER_TOKEN');
+    return false;
+  }
+  
+  try {
+    if (fs.existsSync(ACCOUNTS_FILE)) {
+      const content = fs.readFileSync(ACCOUNTS_FILE, 'utf8');
+      allAccounts = content.split('\n').filter(line => line.trim()).map((line, index) => {
+        const parts = line.split(':');
+        return {
+          email: parts[0],
+          emailPass: parts[1],
+          password: parts[2],
+          token: parts[3],
+          originalLine: line,  // Store original line for later
+          lineIndex: index
+        };
+      });
+      console.log(`✅ Loaded ${allAccounts.length} accounts from accounts.txt`);
+      
+      // Load last account index
+      try {
+        if (fs.existsSync(ACCOUNT_INDEX_FILE)) {
+          const data = JSON.parse(fs.readFileSync(ACCOUNT_INDEX_FILE, 'utf8'));
+          currentAccountIndex = data.index || 0;
+        }
+      } catch (error) {
+        console.warn('⚠️  Could not load account index, starting from 0');
+        currentAccountIndex = 0;
+      }
+      
+      return true;
+    }
+  } catch (error) {
+    console.error('❌ Error loading accounts:', error.message);
+  }
+  return false;
+}
+
+// Mark account as invalid and save to used_tokens.txt
+function saveInvalidAccount(account) {
+  try {
+    const invalidTokensFile = path.join(__dirname, 'used_tokens.txt');
+    const dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    
+    // Append the original line to used_tokens.txt with timestamp
+    const timestamp = new Date().toISOString();
+    const line = `${account.originalLine} # INVALID - ${timestamp}\n`;
+    fs.appendFileSync(invalidTokensFile, line);
+    console.log(`📝 Saved invalid account to used_tokens.txt: ${account.email}`);
+  } catch (error) {
+    console.error('❌ Error saving invalid account:', error.message);
+  }
+}
+
+// Get current token (from accounts.txt or fallback to .env)
+function getCurrentToken() {
+  if (allAccounts.length === 0) {
+    console.log('⚠️  No accounts in accounts.txt, using USER_TOKEN from .env as fallback');
+    return USER_TOKEN;
+  }
+  return allAccounts[currentAccountIndex].token;
+}
+
+// Get current account info or fallback message
+function getCurrentAccountInfo() {
+  if (allAccounts.length === 0) {
+    return { email: 'USER_TOKEN (from .env)', isFallback: true };
+  }
+  return { email: allAccounts[currentAccountIndex].email, isFallback: false };
+}
+
+// Move to next account and save index
+function nextAccount() {
+  currentAccountIndex = (currentAccountIndex + 1) % allAccounts.length;
+  try {
+    const dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    fs.writeFileSync(ACCOUNT_INDEX_FILE, JSON.stringify({ index: currentAccountIndex }, null, 2));
+  } catch (error) {
+    console.error('❌ Error saving account index:', error.message);
+  }
+}
+
+// Load accounts on startup
+loadAccounts();
+// Send error alerts to webhook
+async function sendErrorAlert(title, description, severity = 'warning') {
+  if (!ERROR_WEBHOOK) return;
+  
+  try {
+    const colors = {
+      critical: 0xFF0000, // Red
+      warning: 0xFFA500,  // Orange
+      info: 0x3498DB      // Blue
+    };
+
+    await axios.post(ERROR_WEBHOOK, {
+      embeds: [{
+        title: `🚨 ${title}`,
+        description: description,
+        color: colors[severity] || colors.warning,
+        timestamp: new Date().toISOString(),
+        footer: {
+          text: 'QuestFinder Error Alert'
+        }
+      }]
+    });
+  } catch (error) {
+    console.error('❌ Failed to send error alert:', error.message);
+  }
+}
 
 // Load notified quest IDs
 function loadNotifiedQuestIds() {
@@ -298,6 +427,15 @@ function extractQuestsFromHTML(html) {
 }
 
 async function fetchQuests() {
+  const currentToken = getCurrentToken();
+  const accountInfo = getCurrentAccountInfo();
+  
+  if (accountInfo.isFallback) {
+    console.log(`🔑 All accounts.txt tokens exhausted - Using USER_TOKEN from .env as FALLBACK`);
+  } else {
+    console.log(`🔑 Using account: ${accountInfo.email} (${currentAccountIndex + 1}/${allAccounts.length})`);
+  }
+  
   try {
     let localBrowser;
     try {
@@ -347,13 +485,13 @@ async function fetchQuests() {
 
       // Set token in authorization header AND local storage
       await page.setExtraHTTPHeaders({
-        'Authorization': USER_TOKEN
+        'Authorization': currentToken
       });
 
       // Also set token in local storage for good measure
       await page.evaluateOnNewDocument((token) => {
         localStorage.setItem('token', `"${token}"`);
-      }, USER_TOKEN);
+      }, currentToken);
 
       // Navigate to quest page with better error handling
       console.log(`🌐 Navigating to ${QUEST_PAGE_URL}...`);
@@ -382,13 +520,47 @@ async function fetchQuests() {
       // Debug: Check if we're on login page
       if (html.includes('login') || html.includes('signin') || html.includes('You are being redirected')) {
         console.error('❌ ERROR: Page appears to be a login page - authentication failed!');
-        console.error('   This means the USER_TOKEN in .env is invalid or expired.');
+        console.error(`   Token from: ${accountInfo.email} is invalid or expired`);
+        
+        // Save invalid account
+        if (allAccounts.length > 0) {
+          saveInvalidAccount(allAccounts[currentAccountIndex]);
+        }
+        
+        if (allAccounts.length > 1) {
+          nextAccount();
+          const nextEmail = allAccounts[currentAccountIndex].email;
+          console.log(`🔄 Switching to next account: ${nextEmail}`);
+          await sendErrorAlert(
+            'Account Token Invalid - Rotating',
+            `Token from account **${accountInfo.email}** is invalid or expired.\n\n**Action:** Automatically switched to next account: **${nextEmail}**\n\nInvalid account saved to \`used_tokens.txt\`\n\nIf all accounts fail, will use USER_TOKEN from .env`,
+            'warning'
+          );
+          // Don't return - let it continue with the next account on next scan
+        } else if (!accountInfo.isFallback) {
+          // All accounts.txt are exhausted, will use .env fallback
+          nextAccount(); // This will cycle back to 0 and use USER_TOKEN fallback
+          await sendErrorAlert(
+            'All accounts.txt Tokens Exhausted - Using .env Fallback',
+            `Token from account **${accountInfo.email}** is invalid or expired.\n\n**All accounts from accounts.txt have failed.** Now using USER_TOKEN from .env as fallback.\n\nPlease refresh tokens in accounts.txt or .env`,
+            'critical'
+          );
+        } else {
+          // Even .env fallback failed
+          await sendErrorAlert(
+            'Critical: All Tokens Failed - Including .env Fallback',
+            `USER_TOKEN from .env is also invalid or expired!\n\n**URGENT:** Need valid Discord token immediately.\n\n1. Get new token from https://discord.com\n2. Add to accounts.txt or update USER_TOKEN in .env\n3. Scraper cannot continue without valid token`,
+            'critical'
+          );
+        }
         console.log('📋 To fix this:');
+
         console.log('   1. Go to https://discord.com');
         console.log('   2. Open Developer Tools (F12) → Application → Local Storage');
         console.log('   3. Find the "token" key');
         console.log('   4. Copy the full token value (without quotes)');
         console.log('   5. Update USER_TOKEN in .env');
+
         // Still save the HTML for debugging
         const debugFile = path.join(__dirname, 'quests_debug.html');
         fs.writeFileSync(debugFile, html, 'utf-8');
@@ -454,6 +626,21 @@ async function fetchQuests() {
       console.error('🔍 Full error details:', error.toString());
       if (error.stack) {
         console.error('📍 Stack trace:', error.stack);
+      }
+      
+      // Send critical error alerts
+      if (error.message.includes('timeout') || error.message.includes('ECONNREFUSED')) {
+        await sendErrorAlert(
+          'Scraper Connection Error',
+          `Failed to connect to Discord:\n\`${error.message}\``,
+          'warning'
+        );
+      } else if (error.message.includes('puppeteer') || error.message.includes('browser')) {
+        await sendErrorAlert(
+          'Scraper Browser Error',
+          `Browser/Puppeteer error:\n\`${error.message}\``,
+          'critical'
+        );
       }
     } finally {
       // Always close browser after scan
