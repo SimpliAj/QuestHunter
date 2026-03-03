@@ -849,6 +849,11 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             inline: false
           },
           {
+            name: '💬 Support Discord',
+            value: '[Join our Discord](https://discord.gg/X5YKZBh9xV)',
+            inline: false
+          },
+          {
             name: '💻 Source Code',
             value: '[GitHub Repository](https://github.com/SimpliAj/QuestHunter)',
             inline: false
@@ -873,50 +878,65 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const totalTrackedQuests = knownQuests.size + expiredQuests.size; // All quests ever
       const activeQuests = knownQuests.size; // Only active quests
       
-      // Calculate available orbs and decorations from ACTIVE quests only
+      // Calculate available orbs, decorations, and game items from ACTIVE quests only
       let availableOrbs = 0;
       let availableDecorations = 0;
+      let availableGameItems = 0;
+      const gameItemsMap = new Map(); // Track unique game items
       
       for (const quest of knownQuests.values()) {
-        if (quest.reward?.toLowerCase().includes('decoration') || quest.reward?.toLowerCase().includes('dekoration')) {
+        const rewardLower = quest.reward?.toLowerCase() || '';
+        if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
           availableDecorations++;
-        } else {
+        } else if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
           const orbMatch = quest.reward?.match(/(\d+)/);
           if (orbMatch) {
             availableOrbs += parseInt(orbMatch[1]);
           }
+        } else if (quest.reward && !rewardLower.includes('orb')) {
+          // It's a game item (anything that's not orbs or decorations)
+          gameItemsMap.set(quest.reward, (gameItemsMap.get(quest.reward) || 0) + 1);
+          availableGameItems++;
         }
       }
       
-      // Calculate total tracked orbs and decorations from ALL quests (active + expired)
+      // Calculate total tracked orbs, decorations, and game items from ALL quests (active + expired)
       let totalTrackedOrbs = 0;
       let totalTrackedDecorations = 0;
+      let totalTrackedGameItems = 0;
+      const totalGameItemsMap = new Map();
       
       // Count from active quests
       for (const quest of knownQuests.values()) {
-        // Check if reward is decorations or similar
-        if (quest.reward?.toLowerCase().includes('decoration') || quest.reward?.toLowerCase().includes('dekoration')) {
+        const rewardLower = quest.reward?.toLowerCase() || '';
+        if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
           totalTrackedDecorations++;
-        } else {
+        } else if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
           // Extract orb amount from reward string like "700 Discord Orbs" or "200 Discord Orbs"
           const orbMatch = quest.reward?.match(/(\d+)/);
           if (orbMatch) {
             totalTrackedOrbs += parseInt(orbMatch[1]);
           }
+        } else if (quest.reward && !rewardLower.includes('orb')) {
+          totalGameItemsMap.set(quest.reward, (totalGameItemsMap.get(quest.reward) || 0) + 1);
+          totalTrackedGameItems++;
         }
       }
       
       // Also count from expired quests
       for (const [, quest] of expiredQuests) {
-        // Check if reward is decorations or similar
-        if (quest.reward?.toLowerCase().includes('decoration') || quest.reward?.toLowerCase().includes('dekoration')) {
+        const rewardLower = quest.reward?.toLowerCase() || '';
+        if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
           totalTrackedDecorations++;
-        } else {
+        } else if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
           // Extract orb amount from reward string like "700 Discord Orbs" or "200 Discord Orbs"
           const orbMatch = quest.reward?.match(/(\d+)/);
           if (orbMatch) {
             totalTrackedOrbs += parseInt(orbMatch[1]);
           }
+        } else if (quest.reward && !rewardLower.includes('orb')) {
+          totalGameItemsMap.set(quest.reward, (totalGameItemsMap.get(quest.reward) || 0) + 1);
+          totalTrackedGameItems++;
         }
       }
       
@@ -956,6 +976,11 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             inline: true
           },
           {
+            name: '🎮 Game Items',
+            value: availableGameItems.toString(),
+            inline: true
+          },
+          {
             name: '═══ Total Tracked ═══',
             value: '** **',
             inline: false
@@ -968,6 +993,11 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           {
             name: '🎨 Decorations',
             value: totalTrackedDecorations.toString(),
+            inline: true
+          },
+          {
+            name: '🎮 Game Items',
+            value: totalTrackedGameItems.toString(),
             inline: true
           }
         ],
