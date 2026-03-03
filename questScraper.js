@@ -116,6 +116,17 @@ function nextAccount() {
 
 // Load accounts on startup
 loadAccounts();
+
+// Show which account is being used on startup
+function logAccountSetup() {
+  const accountInfo = getCurrentAccountInfo();
+  if (accountInfo.isFallback) {
+    console.log(`✅ Using USER_TOKEN from .env (fallback)`);
+  } else {
+    const tokenPreview = getCurrentToken().substring(0, 20) + '...';
+    console.log(`✅ Using account #${currentAccountIndex + 1}: ${accountInfo.email} (Token: ${tokenPreview})`);
+  }
+}
 // Send error alerts to webhook
 async function sendErrorAlert(title, description, severity = 'warning') {
   if (!ERROR_WEBHOOK) return;
@@ -202,9 +213,20 @@ function saveLastScanTime() {
 }
 
 function parseQuestTypeFromButton(buttonText) {
-  if (buttonText.includes('Video')) return 'WATCH_VIDEO';
-  if (buttonText.includes('annehmen') || buttonText.includes('Quest annehmen')) return 'PLAY_ON_DESKTOP';
-  if (buttonText.includes('starten') || buttonText.includes('Quest starten')) return 'WATCH_VIDEO';
+  const lowerText = buttonText.toLowerCase();
+  
+  // Detect quest type from button text
+  // German patterns
+  if (lowerText.includes('video') || lowerText.includes('schauen')) return 'WATCH_VIDEO';
+  if (lowerText.includes('annehmen') || lowerText.includes('quest annehmen')) return 'PLAY_ON_DESKTOP';
+  if (lowerText.includes('starten') || lowerText.includes('quest starten')) return 'PLAY_ON_DESKTOP';
+  
+  // English patterns
+  if (lowerText.includes('watch')) return 'WATCH_VIDEO';
+  if (lowerText.includes('play') || lowerText.includes('claim')) return 'PLAY_ON_DESKTOP';
+  if (lowerText.includes('accept') || lowerText.includes('accept quest')) return 'PLAY_ON_DESKTOP';
+  
+  // Default
   return 'UNKNOWN';
 }
 
@@ -315,20 +337,23 @@ function extractQuestsFromHTML(html) {
       console.log(`  💰 ${questName}: ${orbsAmount} Discord Orbs`);
     }
     
-    // Pattern 2: Non-Orb reward - text between opening and closing span in header context
+    // Pattern 2: Non-Orb reward - nested span structure (e.g., Claim <span>a Razeshi C. Pet</span>)
     if (!reward) {
-      // Look for span in the header section that contains the reward text
-      // The pattern is: <span class="text-md/semibold_cf4812 header__956c6"...>REWARD_TEXT</span> beanspruchen
-      const rewardSpanMatch = tileSection.match(/header__956c6[^>]*>([^<]+)<\/span>\s+beanspruchen/);
-      if (rewardSpanMatch) {
-        reward = rewardSpanMatch[1].trim();
-        console.log(`  🎁 ${questName}: ${reward}`);
+      // Look for pattern: header__956c6...>...<span...>REWARD_TEXT</span>
+      // This handles nested spans like: Claim <span>a Razeshi C. Pet</span>
+      const nestedSpanMatch = tileSection.match(/header__956c6[^>]*>[\s\S]*?<span[^>]*>([^<]+)<\/span>/);
+      if (nestedSpanMatch) {
+        const potentialReward = nestedSpanMatch[1].trim();
+        if (potentialReward && potentialReward.length > 2) {
+          reward = potentialReward;
+          console.log(`  🎁 ${questName}: ${reward}`);
+        }
       }
     }
     
-    // Pattern 3: Alternative for non-Orb rewards where text appears in first span after "Beanspruche"
+    // Pattern 3: German "Beanspruche" pattern - text in span after "Beanspruche"
     if (!reward) {
-      const beanspruchMatch = tileSection.match(/Beanspruche\s+<span[^>]*>([^<]+)<\/span>/);
+      const beanspruchMatch = tileSection.match(/(?:Beanspruche|Claim)\s+<span[^>]*>([^<]+)<\/span>/i);
       if (beanspruchMatch) {
         const potentialReward = beanspruchMatch[1].trim();
         // Make sure it's not just styling information
@@ -346,14 +371,16 @@ function extractQuestsFromHTML(html) {
       continue; // Skip this quest entirely instead of using fallback
     }
     
-    // Extract expiration date - look for "Endet" or "Quest endet am"
+    // Extract expiration date - support both German and English patterns
     let expiresAt = 'Unknown';
-    const expireMatch1 = tileSection.match(/Endet\s+(\d+\.\d+\.)/);
+    
+    // German patterns: "Endet" or "Quest endet am" (e.g., "3.3." or "3.3")
+    const expireMatch1 = tileSection.match(/(?:Endet|endet am)\s+(\d+\.\d+\.?)/i);
     if (expireMatch1) {
       expiresAt = expireMatch1[1];
     } else {
-      // Also try "Quest endet am" pattern
-      const expireMatch2 = tileSection.match(/Quest endet am\s+(\d+\.\d+\.)/);
+      // English patterns: "Expires" or "Ends" (e.g., "3/3" or "3/3/2026")
+      const expireMatch2 = tileSection.match(/(?:Expires?|Ends?)\s+(?:on\s+)?(\d+\/\d+(?:\/\d+)?)/i);
       if (expireMatch2) {
         expiresAt = expireMatch2[1];
       }
@@ -386,9 +413,9 @@ function extractQuestsFromHTML(html) {
     }
     
     // Check if quest is expired by looking for expiration text in button
-    // Only skip if button text is EXACTLY an expiration phrase, not if it just contains those words
-    // German: "Quest endet am X.X." / English: "Ends on X.X." or similar
-    const isExpiredQuest = buttonText.match(/^(Quest )?endet am \d+\.\d+\.$/) || buttonText.match(/^Ends? on \d+\.\d+\.?$/);
+    // German: "Quest endet am X.X." / "endet am X.X."
+    // English: "Quest ended X/X", "ended X/X", "Ends on X.X.", "Quest Ends X/X", etc.
+    const isExpiredQuest = buttonText.match(/^(Quest )?(ended?|endet am|Ends? on)/i);
     if (isExpiredQuest) {
       console.log(`  ⏰ Quest ${questId} expired: "${buttonText}" (skipping)`);
       skippedCount++;
@@ -422,18 +449,27 @@ function extractQuestsFromHTML(html) {
   }
   
   console.log(`📈 Processed: ${processedCount} active, Skipped: ${skippedCount} expired`);
+  console.log(`✅ Scan completed with account #${currentAccountIndex + 1}`);
   
   return quests;
 }
 
-async function fetchQuests() {
+async function fetchQuests(retryCount = 0, maxRetries = allAccounts.length) {
   const currentToken = getCurrentToken();
   const accountInfo = getCurrentAccountInfo();
+  
+  // Validate token before using it
+  if (!currentToken || typeof currentToken !== 'string' || currentToken.trim() === '') {
+    const errorMsg = 'No valid token available - USER_TOKEN is missing or invalid in .env';
+    console.error(`❌ ${errorMsg}`);
+    await sendErrorAlert('Token Validation Failed', errorMsg, 'critical');
+    throw new Error(errorMsg);
+  }
   
   if (accountInfo.isFallback) {
     console.log(`🔑 All accounts.txt tokens exhausted - Using USER_TOKEN from .env as FALLBACK`);
   } else {
-    console.log(`🔑 Using account: ${accountInfo.email} (${currentAccountIndex + 1}/${allAccounts.length})`);
+    console.log(`🔑 Using account: ${accountInfo.email} (${currentAccountIndex + 1}/${allAccounts.length})${retryCount > 0 ? ` [Retry ${retryCount}/${maxRetries}]` : ''}`);
   }
   
   try {
@@ -484,14 +520,15 @@ async function fetchQuests() {
       });
 
       // Set token in authorization header AND local storage
+      const sanitizedToken = currentToken.trim();
       await page.setExtraHTTPHeaders({
-        'Authorization': currentToken
+        'Authorization': sanitizedToken
       });
 
       // Also set token in local storage for good measure
       await page.evaluateOnNewDocument((token) => {
         localStorage.setItem('token', `"${token}"`);
-      }, currentToken);
+      }, sanitizedToken);
 
       // Navigate to quest page with better error handling
       console.log(`🌐 Navigating to ${QUEST_PAGE_URL}...`);
@@ -536,7 +573,11 @@ async function fetchQuests() {
             `Token from account **${accountInfo.email}** is invalid or expired.\n\n**Action:** Automatically switched to next account: **${nextEmail}**\n\nInvalid account saved to \`used_tokens.txt\`\n\nIf all accounts fail, will use USER_TOKEN from .env`,
             'warning'
           );
-          // Don't return - let it continue with the next account on next scan
+          
+          // RETRY immediately with next account
+          console.log(`🔄 Retrying scan with next account...`);
+          await localBrowser.close();
+          return await fetchQuests(retryCount + 1, maxRetries);
         } else if (!accountInfo.isFallback) {
           // All accounts.txt are exhausted, will use .env fallback
           nextAccount(); // This will cycle back to 0 and use USER_TOKEN fallback
@@ -545,6 +586,11 @@ async function fetchQuests() {
             `Token from account **${accountInfo.email}** is invalid or expired.\n\n**All accounts from accounts.txt have failed.** Now using USER_TOKEN from .env as fallback.\n\nPlease refresh tokens in accounts.txt or .env`,
             'critical'
           );
+          
+          // RETRY immediately with fallback token
+          console.log(`🔄 Retrying scan with USER_TOKEN fallback...`);
+          await localBrowser.close();
+          return await fetchQuests(retryCount + 1, maxRetries);
         } else {
           // Even .env fallback failed
           await sendErrorAlert(
@@ -647,6 +693,7 @@ async function fetchQuests() {
       if (localBrowser) {
         await localBrowser.close();
         console.log('✅ Browser closed - account set to invisible');
+        console.log(`✅ Scan completed successfully with account #${currentAccountIndex + 1}`);
       }
     }
 
@@ -686,6 +733,7 @@ async function sendQuestsToBot(quests) {
 
 async function start() {
   console.log('🚀 Discord Quest Scraper Started');
+  logAccountSetup();
   console.log(`🔗 Webhook URL: ${WEBHOOK_URL}`);
   console.log(`⏱️  Scanning every ${SCAN_INTERVAL}ms`);
   console.log('---');
@@ -720,5 +768,4 @@ if (!USER_TOKEN) {
 }
 
 start();
-
 
