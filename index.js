@@ -1692,7 +1692,8 @@ app.post('/webhook/quests', async (req, res) => {
     let newQuestCount = 0;
     for (const quest of quests) {
       // Check if this is a truly new quest (not previously notified)
-      const isNew = !knownQuests.has(quest.id);
+      // IMPORTANT: Check both knownQuests AND expiredQuests to avoid resending expired quests
+      const isNew = !knownQuests.has(quest.id) && !expiredQuests.has(quest.id);
       
       if (isNew) {
         newQuestCount++;
