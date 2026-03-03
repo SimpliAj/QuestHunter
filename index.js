@@ -1629,8 +1629,8 @@ app.post('/webhook/quests', async (req, res) => {
       // Compare dates
       if (expireMonth < currentMonth) {
         return true; // Already passed this month
-      } else if (expireMonth === currentMonth && expireDay < currentDay) {
-        return true; // Same month but day has passed
+      } else if (expireMonth === currentMonth && expireDay <= currentDay) {
+        return true; // Same month but day has passed (including today)
       }
       
       return false; // Not expired yet
