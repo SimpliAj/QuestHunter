@@ -327,6 +327,23 @@ async function registerSlashCommands() {
       ],
     },
     {
+      name: 'search',
+      description: 'Search for active quests by reward type',
+      options: [
+        {
+          name: 'type',
+          description: 'Filter quests by reward type',
+          type: 3, // STRING type
+          required: true,
+          choices: [
+            { name: 'Orbs', value: 'orbs' },
+            { name: 'Decorations', value: 'decorations' },
+            { name: 'In-Game Items', value: 'items' },
+          ],
+        },
+      ],
+    },
+    {
       name: 'remove',
       description: 'Remove a channel or ping role',
       options: [
@@ -1471,6 +1488,71 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       await interaction.reply({
         embeds: [embed],
         components: [row],
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.commandName === 'search') {
+      const type = interaction.options.getString('type');
+      
+      // Filter active quests by type
+      let filteredQuests = [];
+      
+      for (const quest of knownQuests.values()) {
+        const rewardLower = quest.reward?.toLowerCase() || '';
+        
+        if (type === 'orbs') {
+          if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
+            filteredQuests.push(quest);
+          }
+        } else if (type === 'decorations') {
+          if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
+            filteredQuests.push(quest);
+          }
+        } else if (type === 'items') {
+          if (quest.reward && !rewardLower.includes('orb') && !rewardLower.includes('decoration') && !rewardLower.includes('dekoration')) {
+            filteredQuests.push(quest);
+          }
+        }
+      }
+      
+      // Create embed
+      if (filteredQuests.length === 0) {
+        return await interaction.reply({
+          content: `❌ No active quests found with ${type === 'orbs' ? 'Orb' : type === 'decorations' ? 'Decoration' : 'In-Game Item'} rewards`,
+          ephemeral: true,
+        });
+      }
+      
+      // Format quest list with links
+      const typeEmoji = type === 'orbs' ? '<:orbs:1476345614412288040>' : type === 'decorations' ? '🎨' : '🎮';
+      const typeText = type === 'orbs' ? 'Orbs' : type === 'decorations' ? 'Decorations' : 'In-Game Items';
+      
+      const questDetails = filteredQuests.map(q => {
+        const questLink = `https://discord.com/quests/${q.id}`;
+        return `**[${q.name}](${questLink})**\nReward: ${q.reward}`;
+      }).join('\n\n');
+      
+      const searchEmbed = {
+        color: 0x5865F2,
+        title: `${typeEmoji} ${typeText} Search Results`,
+        description: questDetails,
+        fields: [
+          {
+            name: '📊 Total Results',
+            value: `${filteredQuests.length} quest(s) found`,
+            inline: true,
+          }
+        ],
+        footer: {
+          text: 'QuestHunter Search',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+      
+      await interaction.reply({
+        embeds: [searchEmbed],
         ephemeral: true,
       });
     }
