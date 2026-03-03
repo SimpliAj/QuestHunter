@@ -18,7 +18,6 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -53,6 +52,7 @@ const SCAN_INTERVAL = process.env.SCAN_INTERVAL || 60000; // 1 minute default
 
 // Version from environment variable
 const BOT_VERSION = process.env.BOT_VERSION || '1.0.0'; // Get from .env or use fallback
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID || '774679828594163802'; // Admin user ID from .env
 
 // Load persistent data
 function loadData() {
@@ -408,158 +408,6 @@ async function scanForQuests() {
   }
 }
 
-// Admin broadcast command handler
-const ADMIN_USER_ID = '774679828594163802';
-const PREFIX = '-qh';
-
-client.on('messageCreate', async (message) => {
-  // Ignore bot messages
-  if (message.author.bot) return;
-  
-  // Check if message starts with prefix
-  if (!message.content.startsWith(PREFIX)) return;
-  
-  // Check if user is authorized
-  if (message.author.id !== ADMIN_USER_ID) {
-    return await message.reply({
-      content: '❌ You do not have permission to use this command.'
-    }).catch(() => {});
-  }
-  
-  // Parse command
-  const afterPrefix = message.content.slice(PREFIX.length).trim();
-  const [command, ...rest] = afterPrefix.split(/\s+/);
-  const commandName = command?.toLowerCase();
-  
-  if (!commandName) {
-    return await message.reply({
-      content: '❓ Usage: `-qh announce <title> | <description>`'
-    }).catch(() => {});
-  }
-  
-  if (commandName === 'announce') {
-    // Get the message content after the command
-    const announcementText = rest.join(' ');
-    
-    if (!announcementText) {
-      return await message.reply({
-        content: '❓ Usage: `-qh announce <title> | <description>`\n\nExample: `-qh announce New Bot Features | We have released new features!`'
-      }).catch(() => {});
-    }
-    
-    // Split by | to get title and description
-    const [title, ...descriptionParts] = announcementText.split('|');
-    const description = descriptionParts.join('|').trim();
-    
-    if (!title.trim() || !description) {
-      return await message.reply({
-        content: '❓ Usage: `-qh announce <title> | <description>`\n\nExample: `-qh announce New Bot Features | We have released new features!`'
-      }).catch(() => {});
-    }
-    
-    // Create announcement embed
-    const announcementEmbed = {
-      color: 0x5865F2,
-      title: `📢 ${title.trim()}`,
-      description: description,
-      footer: {
-        text: 'QuestHunter Announcement',
-        icon_url: 'https://i.imgur.com/yTgBkjM.png'
-      },
-      timestamp: new Date().toISOString()
-    };
-    
-    // Broadcast to all guilds
-    let broadcastCount = 0;
-    const guildList = [];
-    
-    for (const [guildId, settings] of guildSettings) {
-      const guildChannels = settings.channels || [];
-      
-      if (guildChannels.length > 0) {
-        // Send to all configured announcement channels
-        for (const ch of guildChannels) {
-          try {
-            const channel = await client.channels.fetch(ch.id);
-            if (channel) {
-              await channel.send({ embeds: [announcementEmbed] });
-              broadcastCount++;
-              guildList.push(`✅ ${channel.guild?.name || 'Unknown Guild'} (#${channel.name})`);
-            }
-          } catch (error) {
-            guildList.push(`❌ Failed to send to guild (Channel ${ch.id}): ${error.message}`);
-          }
-        }
-      }
-    }
-    
-    // Send confirmation embed
-    const confirmEmbed = {
-      color: broadcastCount > 0 ? 0x00FF00 : 0xFF0000,
-      title: '✅ Announcement Broadcast Complete',
-      description: `Successfully sent announcement to **${broadcastCount}** channel(s)`,
-      fields: [
-        {
-          name: 'Title',
-          value: title.trim(),
-          inline: false
-        },
-        {
-          name: 'Description',
-          value: description,
-          inline: false
-        },
-        {
-          name: 'Channels Notified',
-          value: guildList.length > 0 ? guildList.join('\n') : 'No channels configured',
-          inline: false
-        }
-      ],
-      footer: {
-        text: 'QuestHunter Admin',
-        icon_url: 'https://i.imgur.com/yTgBkjM.png'
-      },
-      timestamp: new Date().toISOString()
-    };
-    
-    await message.reply({
-      embeds: [confirmEmbed]
-    }).catch(() => {});
-    
-  } else if (commandName === 'help') {
-    const helpEmbed = {
-      color: 0x5865F2,
-      title: '🛠️ QuestHunter Admin Commands',
-      description: 'Commands available for authorized administrators',
-      fields: [
-        {
-          name: '`-qh announce <title> | <description>`',
-          value: 'Broadcast an announcement to all configured guild channels',
-          inline: false
-        },
-        {
-          name: 'Example',
-          value: '`-qh announce Server Maintenance | The bot will be offline for maintenance from 10 PM to 12 AM UTC.`',
-          inline: false
-        }
-      ],
-      footer: {
-        text: 'QuestHunter Admin Help',
-        icon_url: 'https://i.imgur.com/yTgBkjM.png'
-      },
-      timestamp: new Date().toISOString()
-    };
-    
-    await message.reply({
-      embeds: [helpEmbed]
-    }).catch(() => {});
-    
-  } else {
-    await message.reply({
-      content: `❌ Unknown command: \`${commandName}\`\n\nType \`-qh help\` for available commands`
-    }).catch(() => {});
-  }
-});
 
 async function scanForQuests() {
   try {
@@ -1093,7 +941,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
     }
 
     if (interaction.commandName === 'stats') {
-      const totalServers = guildSettings.size;
+      const totalServers = client.guilds.cache.size;
       const totalChannels = Array.from(guildSettings.values()).reduce((sum, settings) => sum + (settings.channels?.length || 0), 0);
       const totalTrackedQuests = knownQuests.size + expiredQuests.size; // All quests ever
       const activeQuests = knownQuests.size; // Only active quests
@@ -1231,6 +1079,82 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       await interaction.reply({
         embeds: [statsEmbed],
         ephemeral: true,
+      });
+    }
+
+    if (interaction.commandName === 'announce') {
+      // Check if user is the admin
+      if (interaction.user.id !== ADMIN_USER_ID) {
+        return await interaction.reply({
+          content: '❌ Only the bot admin can use this command',
+          ephemeral: true,
+        });
+      }
+
+      const title = interaction.options.getString('title');
+      const message = interaction.options.getString('message');
+
+      // Create announcement embed
+      const announcementEmbed = {
+        color: 0x5865F2,
+        title: `📢 ${title}`,
+        description: message,
+        footer: {
+          text: 'QuestHunter Announcement',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      // Broadcast to all configured channels
+      let broadcastCount = 0;
+      const failedChannels = [];
+
+      for (const [guildId, settings] of guildSettings) {
+        const guildChannels = settings.channels || [];
+
+        if (guildChannels.length > 0) {
+          for (const ch of guildChannels) {
+            try {
+              const channel = await client.channels.fetch(ch.id);
+              if (channel) {
+                await channel.send({ embeds: [announcementEmbed] });
+                broadcastCount++;
+              }
+            } catch (error) {
+              failedChannels.push(ch.id);
+            }
+          }
+        }
+      }
+
+      // Send confirmation
+      const confirmEmbed = {
+        color: broadcastCount > 0 ? 0x00FF00 : 0xFF0000,
+        title: '✅ Announcement Broadcast Complete',
+        description: `Successfully sent announcement to **${broadcastCount}** channel(s)`,
+        fields: [
+          {
+            name: 'Title',
+            value: title,
+            inline: false
+          },
+          {
+            name: 'Message',
+            value: message,
+            inline: false
+          }
+        ],
+        footer: {
+          text: 'QuestHunter Admin',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      await interaction.reply({
+        embeds: [confirmEmbed],
+        ephemeral: true
       });
     }
 
