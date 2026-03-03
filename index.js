@@ -309,6 +309,24 @@ async function registerSlashCommands() {
       description: 'Show bot statistics',
     },
     {
+      name: 'announce',
+      description: 'Broadcast an announcement to all configured guild channels (Admin only)',
+      options: [
+        {
+          name: 'title',
+          description: 'Announcement title',
+          type: 3, // STRING type
+          required: true,
+        },
+        {
+          name: 'message',
+          description: 'Announcement message',
+          type: 3, // STRING type
+          required: true,
+        },
+      ],
+    },
+    {
       name: 'remove',
       description: 'Remove a channel or ping role',
       options: [
