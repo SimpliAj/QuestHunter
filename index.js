@@ -1003,6 +1003,14 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
       // Sort quests from latest to oldest by expiration date
       const quests = Array.from(expiredQuests.values()).sort((a, b) => {
+        // Check if quest is deleted or has unknown date - these should be at the END
+        const aIsSpecial = a.deletedByDiscord || a.expiresAt === 'Unknown' || !a.expiresAt;
+        const bIsSpecial = b.deletedByDiscord || b.expiresAt === 'Unknown' || !b.expiresAt;
+        
+        // If one is special and the other isn't, special goes to end
+        if (aIsSpecial && !bIsSpecial) return 1;
+        if (!aIsSpecial && bIsSpecial) return -1;
+        
         // Parse dates - handle both old (DD.MM.) and new (MM/DD or MM/DD/YYYY) formats
         const parseDate = (dateStr) => {
           // Handle special cases - return -Infinity so they sort to the END (descending)
