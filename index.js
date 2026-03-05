@@ -967,11 +967,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             new ButtonBuilder()
               .setCustomId(`activequests_next_${interaction.user.id}`)
               .setLabel('Next →')
-              .setStyle(ButtonStyle.Primary),
-            new ButtonBuilder()
-              .setCustomId(`activequests_close_${interaction.user.id}`)
-              .setLabel('Close')
-              .setStyle(ButtonStyle.Secondary)
+              .setStyle(ButtonStyle.Primary)
           )
         ];
       }
@@ -982,8 +978,22 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         ephemeral: true,
       });
       
-      // Store pagination state
+      // IMPORTANT: For ephemeral messages, we need to store the state using a special key
+      const stateKey = `activequests_${interaction.user.id}_${Date.now()}`;
+      
+      // Store pagination state with both messageId and stateKey as backup
       paginationState.set(message.id, {
+        page: 1,
+        totalPages: totalPages,
+        quests: quests,
+        createPageEmbed: createPageEmbed,
+        userId: interaction.user.id,
+        filterOption: filterOption,
+        stateKey: stateKey
+      });
+      
+      // Also store with the stateKey as backup
+      paginationState.set(stateKey, {
         page: 1,
         totalPages: totalPages,
         quests: quests,
@@ -1099,11 +1109,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             new ButtonBuilder()
               .setCustomId(`expired_next_${interaction.user.id}`)
               .setLabel('Next →')
-              .setStyle(ButtonStyle.Primary),
-            new ButtonBuilder()
-              .setCustomId(`expired_close_${interaction.user.id}`)
-              .setLabel('Close')
-              .setStyle(ButtonStyle.Secondary)
+              .setStyle(ButtonStyle.Primary)
           )
         ];
       }
@@ -1114,8 +1120,22 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         flags: MessageFlags.Ephemeral,
       });
       
-      // Store pagination state
+      // IMPORTANT: For ephemeral messages, we need to store the state using a special key
+      // Ephemeral messages have different ID handling, so we use userId + timestamp combination
+      const stateKey = `expired_${interaction.user.id}_${Date.now()}`;
+      
+      // Store pagination state with both messageId and stateKey as backup
       paginationState.set(message.id, {
+        page: 1,
+        totalPages: totalPages,
+        quests: quests,
+        createPageEmbed: createPageEmbed,
+        userId: interaction.user.id,
+        stateKey: stateKey
+      });
+      
+      // Also store with the stateKey as backup
+      paginationState.set(stateKey, {
         page: 1,
         totalPages: totalPages,
         quests: quests,
@@ -2110,8 +2130,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Handle expired quests pagination buttons
     if (interaction.customId.startsWith('expired_prev_') || 
-        interaction.customId.startsWith('expired_next_') ||
-        interaction.customId.startsWith('expired_close_')) {
+        interaction.customId.startsWith('expired_next_')) {
       
       const userId = interaction.customId.split('_')[2];
       
@@ -2124,20 +2143,25 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       const messageId = interaction.message.id;
-      const state = paginationState.get(messageId);
+      let state = paginationState.get(messageId);
+      
+      // If state not found with messageId, it might be an ephemeral message
+      // Try to find it using userId-based lookup
+      if (!state) {
+        // Try to find any state for this user (last matching state)
+        for (const [key, value] of paginationState) {
+          if (value.userId === userId && key.startsWith('expired_')) {
+            state = value;
+            break;
+          }
+        }
+      }
       
       if (!state) {
         return await interaction.reply({
           content: '❌ Pagination state not found. Please use the command again.',
           flags: MessageFlags.Ephemeral,
         });
-      }
-      
-      if (interaction.customId.startsWith('expired_close_')) {
-        // Delete the pagination state
-        paginationState.delete(messageId);
-        await interaction.deferUpdate();
-        return;
       }
       
       // Update page number
@@ -2166,11 +2190,7 @@ client.on('interactionCreate', async (interaction) => {
             .setCustomId(`expired_next_${userId}`)
             .setLabel('Next →')
             .setStyle(ButtonStyle.Primary)
-            .setDisabled(state.page === state.totalPages), // Disable on last page
-          new ButtonBuilder()
-            .setCustomId(`expired_close_${userId}`)
-            .setLabel('Close')
-            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(state.page === state.totalPages) // Disable on last page
         )
       ];
       
@@ -2184,8 +2204,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Handle active quests pagination buttons
     if (interaction.customId.startsWith('activequests_prev_') || 
-        interaction.customId.startsWith('activequests_next_') ||
-        interaction.customId.startsWith('activequests_close_')) {
+        interaction.customId.startsWith('activequests_next_')) {
       
       const userId = interaction.customId.split('_')[2];
       
@@ -2198,20 +2217,25 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       const messageId = interaction.message.id;
-      const state = paginationState.get(messageId);
+      let state = paginationState.get(messageId);
+      
+      // If state not found with messageId, it might be an ephemeral message
+      // Try to find it using userId-based lookup
+      if (!state) {
+        // Try to find any state for this user (last matching state)
+        for (const [key, value] of paginationState) {
+          if (value.userId === userId && key.startsWith('activequests_')) {
+            state = value;
+            break;
+          }
+        }
+      }
       
       if (!state) {
         return await interaction.reply({
           content: '❌ Pagination state not found. Please use the command again.',
           flags: MessageFlags.Ephemeral,
         });
-      }
-      
-      if (interaction.customId.startsWith('activequests_close_')) {
-        // Delete the pagination state
-        paginationState.delete(messageId);
-        await interaction.deferUpdate();
-        return;
       }
       
       // Update page number
@@ -2240,11 +2264,7 @@ client.on('interactionCreate', async (interaction) => {
             .setCustomId(`activequests_next_${userId}`)
             .setLabel('Next →')
             .setStyle(ButtonStyle.Primary)
-            .setDisabled(state.page === state.totalPages),
-          new ButtonBuilder()
-            .setCustomId(`activequests_close_${userId}`)
-            .setLabel('Close')
-            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(state.page === state.totalPages)
         )
       ];
       
