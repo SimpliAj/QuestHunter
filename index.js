@@ -268,7 +268,8 @@ async function registerSlashCommands() {
           choices: [
             { name: 'All Quests', value: 'all' },
             { name: 'Orbs Only', value: 'orbs' },
-            { name: 'No Orbs', value: 'no_orbs' },
+            { name: 'Decorations Only', value: 'decorations' },
+            { name: 'Game Items Only', value: 'items' },
           ],
         },
       ],
@@ -589,7 +590,7 @@ client.on('interactionCreate', async (interaction) => {
       
       saveData();
 
-      const filterText = { 'all': 'All Quests', 'orbs': 'Orbs Only', 'no_orbs': 'No Orbs' }[filter];
+      const filterText = { 'all': 'All Quests', 'orbs': 'Orbs Only', 'decorations': 'Decorations Only', 'items': 'Game Items Only', 'no_orbs': 'No Orbs (Legacy)' }[filter];
 
       const embed = {
         color: 0x5865F2,
@@ -1822,15 +1823,30 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
     }
     
     // Check if quest matches the filter
+    const rewardLower = questData.reward?.toLowerCase() || '';
     const hasOrbs = questData.reward && questData.reward.includes('Orbs');
+    const hasDecoration = rewardLower.includes('decoration') || rewardLower.includes('dekoration');
+    const hasItems = questData.reward && !hasOrbs && !hasDecoration;
     
-    if (questFilter === 'orbs' && !hasOrbs) {
-      console.log(`  ⏭️  Skipping - quest has no orbs (channel filter: Orbs Only)`);
-      return;
+    let shouldNotify = true;
+    
+    if (questFilter === 'orbs') {
+      shouldNotify = hasOrbs;
+      if (!shouldNotify) console.log(`  ⏭️  Skipping - quest has no orbs (channel filter: Orbs Only)`);
+    } else if (questFilter === 'decorations') {
+      shouldNotify = hasDecoration;
+      if (!shouldNotify) console.log(`  ⏭️  Skipping - quest has no decorations (channel filter: Decorations Only)`);
+    } else if (questFilter === 'items') {
+      shouldNotify = hasItems;
+      if (!shouldNotify) console.log(`  ⏭️  Skipping - quest is not a game item (channel filter: Items Only)`);
+    } else if (questFilter === 'no_orbs') {
+      // Backward compatibility: no_orbs = decorations + items
+      shouldNotify = hasDecoration || hasItems;
+      if (!shouldNotify) console.log(`  ⏭️  Skipping - quest has orbs (channel filter: No Orbs [legacy])`);
     }
+    // else questFilter === 'all', shouldNotify stays true
     
-    if (questFilter === 'no_orbs' && hasOrbs) {
-      console.log(`  ⏭️  Skipping - quest has orbs (channel filter: No Orbs)`);
+    if (!shouldNotify) {
       return;
     }
     
