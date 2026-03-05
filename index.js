@@ -1046,7 +1046,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         };
         return parseDate(b.expiresAt) - parseDate(a.expiresAt); // Descending (latest first)
       });
-      const QUESTS_PER_PAGE = 20;
+      const QUESTS_PER_PAGE = 10;
       const totalPages = Math.ceil(quests.length / QUESTS_PER_PAGE);
       
       // Function to create page embed
