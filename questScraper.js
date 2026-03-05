@@ -375,9 +375,12 @@ function extractQuestsFromHTML(html) {
     let expiresAt = 'Unknown';
     
     // German patterns: "Endet" or "Quest endet am" (e.g., "3.3." or "3.3")
-    const expireMatch1 = tileSection.match(/(?:Endet|endet am)\s+(\d+\.\d+\.?)/i);
+    const expireMatch1 = tileSection.match(/(?:Endet|endet am)\s+(\d+)\.(\d+)\.?/i);
     if (expireMatch1) {
-      expiresAt = expireMatch1[1];
+      // Convert German format (DD.MM) to standardized format (MM/DD)
+      const day = expireMatch1[1];
+      const month = expireMatch1[2];
+      expiresAt = `${month}/${day}`;
     } else {
       // English patterns: "Expires" or "Ends" (e.g., "3/3" or "3/3/2026")
       const expireMatch2 = tileSection.match(/(?:Expires?|Ends?)\s+(?:on\s+)?(\d+\/\d+(?:\/\d+)?)/i);
