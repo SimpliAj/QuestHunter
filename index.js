@@ -125,6 +125,34 @@ function getGuildChannel(guildId) {
   return guildSettings.get(guildId)?.channelId || process.env.NOTIFICATION_CHANNEL_ID;
 }
 
+// Format date from MM/DD or MM/DD/YYYY to DD.MM. (without year for current year)
+function formatDate(dateStr) {
+  if (!dateStr || dateStr === 'Unknown' || dateStr === 'Deleted by Discord') {
+    return dateStr;
+  }
+  
+  // Input format: MM/DD or MM/DD/YYYY
+  const parts = dateStr.split('/');
+  if (parts.length === 2) {
+    // MM/DD - no year
+    const month = parts[0];
+    const day = parts[1];
+    return `${day}.${month}.`;
+  } else if (parts.length === 3) {
+    // MM/DD/YYYY - with year
+    const month = parts[0];
+    const day = parts[1];
+    const year = parts[2];
+    // Only show year if it's NOT the current year (2026)
+    if (year !== '2026') {
+      return `${day}.${month}.${year}`;
+    }
+    return `${day}.${month}.`;
+  }
+  
+  return dateStr;
+}
+
 // Set guild's notification channel
 function setGuildChannel(guildId, channelId) {
   if (!guildSettings.has(guildId)) {
@@ -298,7 +326,21 @@ async function registerSlashCommands() {
     },
     {
       name: 'activequests',
-      description: 'Show all active quests',
+      description: 'Show all active quests with pagination',
+      options: [
+        {
+          name: 'filter',
+          description: 'Filter quests by reward type (optional)',
+          type: 3, // STRING type
+          required: false,
+          choices: [
+            { name: 'All Quests', value: 'all' },
+            { name: 'Orbs Only', value: 'orbs' },
+            { name: 'Decorations Only', value: 'decorations' },
+            { name: 'Game Items Only', value: 'items' },
+          ],
+        },
+      ],
     },
     {
       name: 'help',
@@ -323,23 +365,6 @@ async function registerSlashCommands() {
           description: 'Announcement message',
           type: 3, // STRING type
           required: true,
-        },
-      ],
-    },
-    {
-      name: 'search',
-      description: 'Search for active quests by reward type',
-      options: [
-        {
-          name: 'type',
-          description: 'Filter quests by reward type',
-          type: 3, // STRING type
-          required: true,
-          choices: [
-            { name: 'Orbs', value: 'orbs' },
-            { name: 'Decorations', value: 'decorations' },
-            { name: 'In-Game Items', value: 'items' },
-          ],
         },
       ],
     },
@@ -391,7 +416,22 @@ async function registerSlashCommands() {
     },
     {
       name: 'dm-notifications',
-      description: 'Toggle DM notifications for new quests',
+      description: 'Configure DM notifications for new quests',
+      options: [
+        {
+          name: 'filter',
+          description: 'Filter which quests to receive DM notifications for',
+          type: 3, // STRING type
+          required: true,
+          choices: [
+            { name: 'All Quests', value: 'all' },
+            { name: 'Orbs Only', value: 'orbs' },
+            { name: 'Decorations Only', value: 'decorations' },
+            { name: 'Game Items Only', value: 'items' },
+            { name: 'Disabled', value: 'disabled' },
+          ],
+        },
+      ],
     },
     {
       name: 'share',
@@ -676,6 +716,7 @@ client.on('interactionCreate', async (interaction) => {
 
       const fields = [];
       
+      // Notification Channels
       if (channels.length === 0) {
         fields.push({
           name: '📍 Notification Channels',
@@ -694,12 +735,14 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
       
+      // Quest Ping Role
       fields.push({
         name: '📢 Quest Ping Role',
         value: pingRoleId ? `<@&${pingRoleId}>` : 'Not configured',
         inline: false
       });
 
+      // Expired Quest Channel
       fields.push({
         name: '🗑️ Expired Quest Channel',
         value: expiredChannelId ? `<#${expiredChannelId}>` : 'Not configured',
@@ -801,12 +844,152 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         });
       }
 
-      const quests = Array.from(knownQuests.values());
-      const questLinks = quests.map((q, i) => `${i + 1}. https://discord.com/quests/${q.id}`).join('\n');
-
-      await interaction.reply({ 
-        content: `📋 **Active Quests (${quests.length} total)**\n\n${questLinks}`, 
-        ephemeral: true 
+      // Get filter option
+      const filterOption = interaction.options.getString('filter') || 'all';
+      
+      // Filter quests based on option
+      let quests = Array.from(knownQuests.values());
+      
+      if (filterOption !== 'all') {
+        quests = quests.filter(quest => {
+          const rewardLower = quest.reward?.toLowerCase() || '';
+          
+          if (filterOption === 'orbs') {
+            return rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '');
+          } else if (filterOption === 'decorations') {
+            return rewardLower.includes('decoration') || rewardLower.includes('dekoration');
+          } else if (filterOption === 'items') {
+            return quest.reward && !rewardLower.includes('orb') && !rewardLower.includes('decoration') && !rewardLower.includes('dekoration');
+          }
+          return true;
+        });
+      }
+      
+      if (quests.length === 0) {
+        const filterText = {
+          'orbs': 'Orb',
+          'decorations': 'Decoration',
+          'items': 'In-Game Item'
+        }[filterOption] || 'quest';
+        
+        return await interaction.reply({
+          content: `❌ No active ${filterText} quests found.`,
+          ephemeral: true,
+        });
+      }
+      
+      // Sort by expiration date (earliest first)
+      quests.sort((a, b) => {
+        const parseDate = (dateStr) => {
+          if (!dateStr || dateStr === 'Unknown') return new Date(0);
+          
+          // Handle both formats: "3.3." (German) and "3/3" or "3/3/2026" (English)
+          let day, month, year = new Date().getFullYear();
+          
+          if (dateStr.includes('.')) {
+            // German format: "3.3." or "3.3"
+            const parts = dateStr.split('.');
+            if (parts.length < 2) return new Date(0);
+            day = parseInt(parts[0]);
+            month = parseInt(parts[1]);
+          } else if (dateStr.includes('/')) {
+            // English format: "3/3" or "3/3/2026" (MM/DD or MM/DD/YYYY)
+            const parts = dateStr.split('/');
+            if (parts.length < 2) return new Date(0);
+            month = parseInt(parts[0]);
+            day = parseInt(parts[1]);
+            if (parts.length === 3) {
+              year = parseInt(parts[2]);
+            }
+          } else {
+            return new Date(0);
+          }
+          
+          return new Date(year, month - 1, day);
+        };
+        return parseDate(a.expiresAt) - parseDate(b.expiresAt);
+      });
+      
+      const QUESTS_PER_PAGE = 10;
+      const totalPages = Math.ceil(quests.length / QUESTS_PER_PAGE);
+      
+      // Function to create page embed
+      function createPageEmbed(pageNum) {
+        const startIdx = (pageNum - 1) * QUESTS_PER_PAGE;
+        const endIdx = Math.min(startIdx + QUESTS_PER_PAGE, quests.length);
+        const pageQuests = quests.slice(startIdx, endIdx);
+        
+        const questFields = pageQuests.map((q, i) => {
+          const globalIdx = startIdx + i + 1;
+          const questLink = `https://discord.com/quests/${q.id}`;
+          return {
+            name: `${globalIdx}. Quest`,
+            value: `[${q.name}](${questLink})\nReward: ${q.reward}\nExpires: ${formatDate(q.expiresAt) || 'Unknown'}`,
+            inline: false
+          };
+        });
+        
+        const filterText = {
+          'all': 'All Quests',
+          'orbs': 'Orbs Only',
+          'decorations': 'Decorations Only',
+          'items': 'Game Items Only'
+        }[filterOption];
+        
+        const embed = {
+          color: 0x5865F2,
+          title: `📋 Active Quests - ${filterText}`,
+          description: `Page ${pageNum} of ${totalPages} (${quests.length} total quests)`,
+          fields: questFields,
+          footer: {
+            text: 'QuestHunter',
+            icon_url: 'https://i.imgur.com/yTgBkjM.png'
+          },
+          timestamp: new Date().toISOString()
+        };
+        
+        return embed;
+      }
+      
+      // Create initial embed
+      const firstEmbed = createPageEmbed(1);
+      
+      // Create buttons if there are multiple pages
+      let components = [];
+      if (totalPages > 1) {
+        components = [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`activequests_prev_${interaction.user.id}`)
+              .setLabel('← Previous')
+              .setStyle(ButtonStyle.Primary)
+              .setDisabled(true),
+            new ButtonBuilder()
+              .setCustomId(`activequests_next_${interaction.user.id}`)
+              .setLabel('Next →')
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId(`activequests_close_${interaction.user.id}`)
+              .setLabel('Close')
+              .setStyle(ButtonStyle.Secondary)
+          )
+        ];
+      }
+      
+      const message = await interaction.reply({
+        embeds: [firstEmbed],
+        components: components,
+        ephemeral: true,
+      });
+      
+      // Store pagination state
+      paginationState.set(message.id, {
+        page: 1,
+        totalPages: totalPages,
+        quests: quests,
+        createPageEmbed: createPageEmbed,
+        userId: interaction.user.id,
+        filterOption: filterOption
       });
     }
 
@@ -820,21 +1003,38 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
       // Sort quests from latest to oldest by expiration date
       const quests = Array.from(expiredQuests.values()).sort((a, b) => {
-        // Parse dates - they're in format "20.2." or "3/6/2026"
+        // Parse dates - handle both old (DD.MM.) and new (MM/DD or MM/DD/YYYY) formats
         const parseDate = (dateStr) => {
           // Handle special cases
           if (dateStr === 'Deleted by Discord' || dateStr === 'Unknown' || !dateStr) {
             return new Date(0); // Sort to bottom
           }
+          
+          // New format: MM/DD or MM/DD/YYYY
           if (dateStr.includes('/')) {
-            // Format: 3/6/2026
-            return new Date(dateStr);
-          } else {
-            // Format: 20.2. (assume current or last year)
-            const [day, month] = dateStr.split('.');
-            const year = 2026;
-            return new Date(year, parseInt(month) - 1, parseInt(day));
+            const parts = dateStr.split('/');
+            if (parts.length === 2) {
+              const month = parseInt(parts[0]);
+              const day = parseInt(parts[1]);
+              const year = 2026;
+              return new Date(year, month - 1, day);
+            } else if (parts.length === 3) {
+              return new Date(dateStr);
+            }
           }
+          
+          // Old format: DD.MM. or DD.MM
+          if (dateStr.includes('.')) {
+            const parts = dateStr.split('.');
+            if (parts.length >= 2) {
+              const day = parseInt(parts[0]);
+              const month = parseInt(parts[1]);
+              const year = 2026;
+              return new Date(year, month - 1, day);
+            }
+          }
+          
+          return new Date(0);
         };
         return parseDate(b.expiresAt) - parseDate(a.expiresAt); // Descending (latest first)
       });
@@ -848,7 +1048,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         const pageQuests = quests.slice(startIdx, endIdx);
         
         const fields = pageQuests.map((q, i) => {
-          let expiryText = q.expiresAt;
+          let expiryText = formatDate(q.expiresAt);
           if (q.deletedByDiscord) {
             expiryText = "Deleted by Discord";
           }
@@ -1457,9 +1657,81 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
     if (interaction.commandName === 'dm-notifications') {
       const userId = interaction.user.id;
-      const userPrefs = userPreferences.get(userId) || { dmNotifications: false };
-      const isEnabled = userPrefs.dmNotifications;
+      const filterOption = interaction.options.getString('filter');
       
+      const userPrefs = userPreferences.get(userId) || { dmNotifications: false, dmFilter: 'all' };
+      
+      // Update preferences
+      if (filterOption === 'disabled') {
+        userPrefs.dmNotifications = false;
+        userPrefs.dmFilter = 'all'; // Reset filter when disabled
+      } else {
+        userPrefs.dmNotifications = true;
+        userPrefs.dmFilter = filterOption;
+      }
+      
+      userPreferences.set(userId, userPrefs);
+      saveData();
+      
+      // Get filter text
+      const filterText = {
+        'all': 'All Quests',
+        'orbs': 'Orbs Only',
+        'decorations': 'Decorations Only',
+        'items': 'Game Items Only',
+        'disabled': 'Disabled'
+      }[filterOption];
+      
+      const embed = {
+        color: 0x5865F2,
+        title: '💬 DM Notifications',
+        description: `Direct message notifications for new quests have been configured.`,
+        fields: [
+          {
+            name: 'Status',
+            value: filterOption === 'disabled' ? '❌ **DISABLED**' : '✅ **ENABLED**',
+            inline: false
+          },
+          {
+            name: 'Filter',
+            value: filterText,
+            inline: false
+          }
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      await interaction.reply({
+        embeds: [embed],
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.commandName === 'dm-notifications-old') {
+      // This is the old button-based handler - kept for backward compatibility with existing buttons
+      // New users will use the command above instead
+      const userId = interaction.user.id;
+      
+      // Check if the button was pressed by the user who initiated the command
+      if (interaction.user.id !== userId) {
+        return await interaction.reply({
+          content: '❌ Only the user who initiated this command can use these buttons',
+          ephemeral: true,
+        });
+      }
+
+      // Toggle the setting
+      const userPrefs = userPreferences.get(userId) || { dmNotifications: false, dmFilter: 'all' };
+      userPrefs.dmNotifications = !userPrefs.dmNotifications;
+      userPreferences.set(userId, userPrefs);
+      saveData();
+
+      const isEnabled = userPrefs.dmNotifications;
+
       const embed = {
         color: 0x5865F2,
         title: '💬 DM Notifications',
@@ -1468,6 +1740,11 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           {
             name: 'Current Status',
             value: isEnabled ? '✅ **ENABLED**' : '❌ **DISABLED**',
+            inline: false
+          },
+          {
+            name: 'Status',
+            value: isEnabled ? 'You will now receive DM notifications for all new quests' : 'You will no longer receive DM notifications',
             inline: false
           }
         ],
@@ -1485,75 +1762,9 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
       const row = new ActionRowBuilder().addComponents(button);
 
-      await interaction.reply({
+      await interaction.update({
         embeds: [embed],
         components: [row],
-        ephemeral: true,
-      });
-    }
-
-    if (interaction.commandName === 'search') {
-      const type = interaction.options.getString('type');
-      
-      // Filter active quests by type
-      let filteredQuests = [];
-      
-      for (const quest of knownQuests.values()) {
-        const rewardLower = quest.reward?.toLowerCase() || '';
-        
-        if (type === 'orbs') {
-          if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
-            filteredQuests.push(quest);
-          }
-        } else if (type === 'decorations') {
-          if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
-            filteredQuests.push(quest);
-          }
-        } else if (type === 'items') {
-          if (quest.reward && !rewardLower.includes('orb') && !rewardLower.includes('decoration') && !rewardLower.includes('dekoration')) {
-            filteredQuests.push(quest);
-          }
-        }
-      }
-      
-      // Create embed
-      if (filteredQuests.length === 0) {
-        return await interaction.reply({
-          content: `❌ No active quests found with ${type === 'orbs' ? 'Orb' : type === 'decorations' ? 'Decoration' : 'In-Game Item'} rewards`,
-          ephemeral: true,
-        });
-      }
-      
-      // Format quest list with links
-      const typeEmoji = type === 'orbs' ? '<:orbs:1476345614412288040>' : type === 'decorations' ? '🎨' : '🎮';
-      const typeText = type === 'orbs' ? 'Orbs' : type === 'decorations' ? 'Decorations' : 'In-Game Items';
-      
-      const questDetails = filteredQuests.map(q => {
-        const questLink = `https://discord.com/quests/${q.id}`;
-        return `**[${q.name}](${questLink})**\nReward: ${q.reward}`;
-      }).join('\n\n');
-      
-      const searchEmbed = {
-        color: 0x5865F2,
-        title: `${typeEmoji} ${typeText} Search Results`,
-        description: questDetails,
-        fields: [
-          {
-            name: '📊 Total Results',
-            value: `${filteredQuests.length} quest(s) found`,
-            inline: true,
-          }
-        ],
-        footer: {
-          text: 'QuestHunter Search',
-          icon_url: 'https://i.imgur.com/yTgBkjM.png'
-        },
-        timestamp: new Date().toISOString()
-      };
-      
-      await interaction.reply({
-        embeds: [searchEmbed],
-        ephemeral: true,
       });
     }
   } catch (error) {
@@ -1637,10 +1848,27 @@ async function sendDMNotifications(questData) {
     let sentCount = 0;
     const usersToNotify = [];
 
-    // Find all users with DM notifications enabled
+    // Find all users with DM notifications enabled and filter quests by their preference
     for (const [userId, prefs] of userPreferences) {
       if (prefs.dmNotifications) {
-        usersToNotify.push(userId);
+        // Check if quest matches user's filter
+        const dmFilter = prefs.dmFilter || 'all'; // Backward compatibility: default to 'all'
+        const rewardLower = questData.reward?.toLowerCase() || '';
+        
+        let shouldNotify = true;
+        
+        if (dmFilter === 'orbs') {
+          shouldNotify = rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(questData.reward || '');
+        } else if (dmFilter === 'decorations') {
+          shouldNotify = rewardLower.includes('decoration') || rewardLower.includes('dekoration');
+        } else if (dmFilter === 'items') {
+          shouldNotify = questData.reward && !rewardLower.includes('orb') && !rewardLower.includes('decoration') && !rewardLower.includes('dekoration');
+        }
+        // else dmFilter === 'all', shouldNotify stays true
+        
+        if (shouldNotify) {
+          usersToNotify.push(userId);
+        }
       }
     }
 
@@ -1699,7 +1927,7 @@ async function notifyExpiredQuest(channelId, questData) {
         },
         {
           name: 'Expired Date',
-          value: questData.expiresAt,
+          value: formatDate(questData.expiresAt),
           inline: false
         }
       ],
@@ -1933,6 +2161,80 @@ client.on('interactionCreate', async (interaction) => {
             .setDisabled(state.page === state.totalPages), // Disable on last page
           new ButtonBuilder()
             .setCustomId(`expired_close_${userId}`)
+            .setLabel('Close')
+            .setStyle(ButtonStyle.Secondary)
+        )
+      ];
+      
+      await interaction.update({
+        embeds: [embed],
+        components: components,
+      });
+      
+      return;
+    }
+
+    // Handle active quests pagination buttons
+    if (interaction.customId.startsWith('activequests_prev_') || 
+        interaction.customId.startsWith('activequests_next_') ||
+        interaction.customId.startsWith('activequests_close_')) {
+      
+      const userId = interaction.customId.split('_')[2];
+      
+      // Check if the button was pressed by the user who initiated the command
+      if (interaction.user.id !== userId) {
+        return await interaction.reply({
+          content: '❌ You cannot use this pagination.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      
+      const messageId = interaction.message.id;
+      const state = paginationState.get(messageId);
+      
+      if (!state) {
+        return await interaction.reply({
+          content: '❌ Pagination state not found. Please use the command again.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      
+      if (interaction.customId.startsWith('activequests_close_')) {
+        // Delete the pagination state
+        paginationState.delete(messageId);
+        await interaction.deferUpdate();
+        return;
+      }
+      
+      // Update page number
+      if (interaction.customId.startsWith('activequests_next_')) {
+        if (state.page < state.totalPages) {
+          state.page++;
+        }
+      } else if (interaction.customId.startsWith('activequests_prev_')) {
+        if (state.page > 1) {
+          state.page--;
+        }
+      }
+      
+      // Create new embed for current page
+      const embed = state.createPageEmbed(state.page);
+      
+      // Update buttons state
+      const components = [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`activequests_prev_${userId}`)
+            .setLabel('← Previous')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(state.page === 1),
+          new ButtonBuilder()
+            .setCustomId(`activequests_next_${userId}`)
+            .setLabel('Next →')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(state.page === state.totalPages),
+          new ButtonBuilder()
+            .setCustomId(`activequests_close_${userId}`)
             .setLabel('Close')
             .setStyle(ButtonStyle.Secondary)
         )
