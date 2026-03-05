@@ -1005,9 +1005,9 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const quests = Array.from(expiredQuests.values()).sort((a, b) => {
         // Parse dates - handle both old (DD.MM.) and new (MM/DD or MM/DD/YYYY) formats
         const parseDate = (dateStr) => {
-          // Handle special cases
+          // Handle special cases - return Infinity so they sort to the END
           if (dateStr === 'Deleted by Discord' || dateStr === 'Unknown' || !dateStr) {
-            return new Date(0); // Sort to bottom
+            return Infinity; // Will sort to the end
           }
           
           // New format: MM/DD or MM/DD/YYYY
@@ -1017,9 +1017,9 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
               const month = parseInt(parts[0]);
               const day = parseInt(parts[1]);
               const year = 2026;
-              return new Date(year, month - 1, day);
+              return new Date(year, month - 1, day).getTime();
             } else if (parts.length === 3) {
-              return new Date(dateStr);
+              return new Date(dateStr).getTime();
             }
           }
           
@@ -1030,11 +1030,11 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
               const day = parseInt(parts[0]);
               const month = parseInt(parts[1]);
               const year = 2026;
-              return new Date(year, month - 1, day);
+              return new Date(year, month - 1, day).getTime();
             }
           }
           
-          return new Date(0);
+          return Infinity;
         };
         return parseDate(b.expiresAt) - parseDate(a.expiresAt); // Descending (latest first)
       });
