@@ -120,37 +120,165 @@ function saveData() {
   }
 }
 
+// Validate shared codes
+function validateCode(code, questId) {
+  // Trim whitespace
+  const trimmedCode = code.trim();
+  
+  // Check minimum length
+  if (trimmedCode.length < 6) {
+    return 'Code is too short. Game codes are typically at least 6 characters long.';
+  }
+  
+  // Reject codes that are only numbers or too simple
+  if (/^\d+$/.test(trimmedCode)) {
+    return 'Codes cannot be just numbers. Valid game codes contain letters, numbers, and/or symbols.';
+  }
+  
+  // Reject codes that are only lowercase letters
+  if (/^[a-z]+$/i.test(trimmedCode) && trimmedCode === trimmedCode.toLowerCase()) {
+    return 'Codes cannot be only lowercase letters. Valid codes have mixed case or numbers.';
+  }
+  
+  // Check for URLs/Links - codes are not links
+  if (/https?:\/\/|www\.|\.com|\.de|\.net|\.org|\.co|\.tv|\.io|\.xyz|bit\.ly|discord\.gg/i.test(trimmedCode)) {
+    return 'Please share only game codes, not links or URLs.';
+  }
+  
+  // Comprehensive list of inappropriate content - English profanities
+  const englishProfanities = [
+    // Sexual terms
+    /\bfuck|fucking|fucked\b/i, /\bass|arse\b/i, /\bshit|shitty\b/i, /\bdamn|dammit|goddamn\b/i,
+    /\bpussy|dick\b/i, /\bcock|cunt\b/i, /\bbitch|bastard\b/i, /\bwhore|slut|prostitute\b/i,
+    /\bporn|xxx|adult|nude|nsfw|xxx\b/i, /\bsex\b/i, /\bcock\b/i, /\bsemen|cum\b/i,
+    
+    // Insulting terms
+    /\bidiot|stupid|dumb|moron|retard\b/i, /\bassholes?\b/i, /\bcrap\b/i, /\bdouchebag\b/i,
+    /\blooser|loser\b/i, /\bdipshit|jackass\b/i, /\bslutwad|cumguzzler\b/i,
+    
+    // Racial/Ethnic slurs (keeping minimal for safety)
+    /\bnigger|nigga\b/i, /\bfaggot|homo\b/i, /\btranny\b/i, /\bkike|kike\b/i,
+    /\bwop|chink|gook|jap|dink\b/i, /\bbeaner|spic|paki\b/i, /\brag?head|towel.?head\b/i,
+    
+    // German profanities
+    /\barsch\b/i, /\bscheisse|scheiße\b/i, /\bverdammt|verdammt\b/i, /\bficker|gefickt\b/i,
+    /\bdummkopf|blödmann|idiot|depp\b/i, /\bashoch|aschi|loch\b/i, /\bschwachsinn|hund\b/i,
+    /\bziegenficker\b/i, /\blump|schwanz\b/i, /\bpisser|pisse\b/i, /\bhurensonn|hurensohn\b/i,
+    /\bvolldepp|vollidiot|trottel\b/i, /\bsäckel|schwachköpfig\b/i, /\bwichser|wichs\b/i,
+    
+    // Spam/Scam related
+    /viagra|cialis|casino|lottery|winner|claim.*prize|money|bet\b/i,
+    /\bbet\b|\bgamble\b/i, /\bloan|credit|bank|paypal/i,
+    
+    // Racial discrimination terms
+    /racism|racist|homophobic|sexist\b/i,
+  ];
+  
+  for (const pattern of englishProfanities) {
+    if (pattern.test(trimmedCode)) {
+      return 'Please share only game codes. This content is not appropriate for the code sharing channel.';
+    }
+  }
+  
+  // Check for spam patterns: same character repeated 4+ times
+  if (/^(.)\1{3,}$/.test(trimmedCode) || /(.)\1{3,}/.test(trimmedCode)) {
+    return 'Please enter a valid code. Codes like "' + trimmedCode + '" don\'t look legitimate.';
+  }
+  
+  // Reject if code is mostly repeated (like "ggggg" or "xxxxxx")
+  if (trimmedCode.replace(/(.)\1/g, '').length < trimmedCode.length / 2) {
+    return 'Please enter a valid code. Code appears to contain too many repeated characters.';
+  }
+  
+  // Check for duplicate codes for the same quest
+  const existingCodesForQuest = Array.from(sharedCodes.values()).filter(
+    entry => entry.questId === questId
+  );
+  
+  const codeExists = existingCodesForQuest.some(entry => 
+    entry.code.toLowerCase() === trimmedCode.toLowerCase()
+  );
+  
+  if (codeExists) {
+    return `This code has already been shared for **${existingCodesForQuest[0]?.questName || 'this quest'}**. Please don't share duplicate codes.`;
+  }
+  
+  return null; // Code is valid
+}
+
 // Get guild's notification channel
 function getGuildChannel(guildId) {
   return guildSettings.get(guildId)?.channelId || process.env.NOTIFICATION_CHANNEL_ID;
 }
 
-// Format date from MM/DD or MM/DD/YYYY to DD.MM. (without year for current year)
+// Format date to DD.MM. or DD.MM.YYYY
+// Handles ISO 8601 ("2026-04-20T00:00:00Z"), MM/DD, MM/DD/YYYY
 function formatDate(dateStr) {
   if (!dateStr || dateStr === 'Unknown' || dateStr === 'Deleted by Discord') {
     return dateStr;
   }
-  
-  // Input format: MM/DD or MM/DD/YYYY
+
+  const currentYear = new Date().getFullYear();
+
+  // ISO 8601 format (from JSON feed)
+  if (dateStr.includes('T') || (dateStr.includes('-') && dateStr.length > 7)) {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    const day = date.getUTCDate();
+    const month = date.getUTCMonth() + 1;
+    const year = date.getUTCFullYear();
+    return year !== currentYear ? `${day}.${month}.${year}` : `${day}.${month}.`;
+  }
+
+  // Legacy MM/DD or MM/DD/YYYY
   const parts = dateStr.split('/');
   if (parts.length === 2) {
-    // MM/DD - no year
-    const month = parts[0];
-    const day = parts[1];
-    return `${day}.${month}.`;
+    return `${parts[1]}.${parts[0]}.`;
   } else if (parts.length === 3) {
-    // MM/DD/YYYY - with year
-    const month = parts[0];
-    const day = parts[1];
     const year = parts[2];
-    // Only show year if it's NOT the current year (2026)
-    if (year !== '2026') {
-      return `${day}.${month}.${year}`;
-    }
-    return `${day}.${month}.`;
+    return year !== String(currentYear) ? `${parts[1]}.${parts[0]}.${year}` : `${parts[1]}.${parts[0]}.`;
   }
-  
+
   return dateStr;
+}
+
+// Format a relative time string like "in 5 Tagen" / "vor 2 Tagen"
+function parseAnyDate(dateStr) {
+  if (!dateStr || dateStr === 'Unknown') return null;
+  // ISO 8601
+  if (dateStr.includes('T') || (dateStr.includes('-') && dateStr.length > 7)) {
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const currentYear = new Date().getFullYear();
+  // German "DD.MM." or "DD.MM.YYYY"
+  if (dateStr.includes('.')) {
+    const parts = dateStr.split('.').filter(p => p.trim());
+    if (parts.length < 2) return null;
+    const day = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1;
+    const year = parts[2] ? parseInt(parts[2]) : currentYear;
+    return new Date(year, month, day);
+  }
+  // Legacy "MM/DD" or "MM/DD/YYYY"
+  if (dateStr.includes('/')) {
+    const parts = dateStr.split('/');
+    if (parts.length < 2) return null;
+    const month = parseInt(parts[0]) - 1;
+    const day = parseInt(parts[1]);
+    const year = parts[2] ? parseInt(parts[2]) : currentYear;
+    return new Date(year, month, day);
+  }
+  return null;
+}
+
+function formatRelative(dateStr) {
+  const date = parseAnyDate(dateStr);
+  if (!date) return null;
+  const diffDays = Math.round((date.getTime() - Date.now()) / 86400000);
+  if (diffDays === 0) return 'heute';
+  if (diffDays > 0) return `in ${diffDays} Tag${diffDays === 1 ? '' : 'en'}`;
+  return `vor ${Math.abs(diffDays)} Tag${Math.abs(diffDays) === 1 ? '' : 'en'}`;
 }
 
 // Set guild's notification channel
@@ -441,15 +569,56 @@ async function registerSlashCommands() {
         {
           name: 'quest',
           description: 'Select the quest for the game code',
-          type: 3, // STRING type for autocomplete
+          type: 3,
           required: true,
           autocomplete: true,
         },
         {
           name: 'code',
           description: 'The game code or reward to share',
-          type: 3, // STRING type
+          type: 3,
           required: true,
+        },
+      ],
+    },
+    {
+      name: 'notification-style',
+      description: 'Set how new quest notifications are displayed in this server',
+      options: [
+        {
+          name: 'style',
+          description: 'Notification style',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'Default (text + auto-embed)', value: 'default' },
+            { name: 'Embed (rich card with reward image)', value: 'embed' },
+          ],
+        },
+      ],
+      default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+    },
+    {
+      name: 'quest-test',
+      description: 'Send test quest notifications to this channel (Bot Admin only)',
+      options: [
+        {
+          name: 'style',
+          description: 'Style to test (defaults to this server\'s current setting)',
+          type: 3,
+          required: false,
+          choices: [
+            { name: 'Default (text + auto-embed)', value: 'default' },
+            { name: 'Embed (rich card with reward image)', value: 'embed' },
+          ],
+        },
+        {
+          name: 'count',
+          description: 'How many quest examples to send (1–15, default 1)',
+          type: 4,
+          required: false,
+          min_value: 1,
+          max_value: 15,
         },
       ],
     }
@@ -883,29 +1052,25 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       quests.sort((a, b) => {
         const parseDate = (dateStr) => {
           if (!dateStr || dateStr === 'Unknown') return new Date(0);
-          
-          // Handle both formats: "3.3." (German) and "3/3" or "3/3/2026" (English)
+          // ISO 8601
+          if (dateStr.includes('T') || (dateStr.includes('-') && dateStr.length > 7)) {
+            return new Date(dateStr);
+          }
           let day, month, year = new Date().getFullYear();
-          
           if (dateStr.includes('.')) {
-            // German format: "3.3." or "3.3"
             const parts = dateStr.split('.');
             if (parts.length < 2) return new Date(0);
             day = parseInt(parts[0]);
             month = parseInt(parts[1]);
           } else if (dateStr.includes('/')) {
-            // English format: "3/3" or "3/3/2026" (MM/DD or MM/DD/YYYY)
             const parts = dateStr.split('/');
             if (parts.length < 2) return new Date(0);
             month = parseInt(parts[0]);
             day = parseInt(parts[1]);
-            if (parts.length === 3) {
-              year = parseInt(parts[2]);
-            }
+            if (parts.length === 3) year = parseInt(parts[2]);
           } else {
             return new Date(0);
           }
-          
           return new Date(year, month - 1, day);
         };
         return parseDate(a.expiresAt) - parseDate(b.expiresAt);
@@ -923,9 +1088,13 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         const questFields = pageQuests.map((q, i) => {
           const globalIdx = startIdx + i + 1;
           const questLink = `https://discord.com/quests/${q.id}`;
+          const taskStr = q.tasks?.length > 0 ? `\nTask(s): ${q.tasks.join(' / ')}` : '';
+          const relExpiry = formatRelative(q.expiresAt);
+          const absExpiry = formatDate(q.expiresAt) || 'Unknown';
+          const expiryStr = relExpiry ? `${absExpiry} (${relExpiry})` : absExpiry;
           return {
-            name: `${globalIdx}. Quest`,
-            value: `[${q.name}](${questLink})\nReward: ${q.reward}\nExpires: ${formatDate(q.expiresAt) || 'Unknown'}`,
+            name: `${globalIdx}. ${q.name}`,
+            value: `[Quest öffnen](${questLink})\nReward: ${q.reward}${taskStr}\nExpires: ${expiryStr}`,
             inline: false
           };
         });
@@ -1579,6 +1748,15 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const questId = interaction.options.getString('quest');
       const code = interaction.options.getString('code');
       
+      // Validate code format
+      const validationError = validateCode(code, questId);
+      if (validationError) {
+        return await interaction.reply({
+          content: `❌ ${validationError}`,
+          ephemeral: true,
+        });
+      }
+      
       // Get quest details
       const quest = knownQuests.get(questId);
       if (!quest) {
@@ -1740,6 +1918,129 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       });
     }
 
+    if (interaction.commandName === 'notification-style') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        return await interaction.reply({
+          content: '❌ You need the Manage Guild permission to use this command.',
+          ephemeral: true,
+        });
+      }
+
+      const style = interaction.options.getString('style');
+
+      if (!guildSettings.has(interaction.guildId)) {
+        guildSettings.set(interaction.guildId, {});
+      }
+      guildSettings.get(interaction.guildId).notificationStyle = style;
+      saveData();
+
+      const label = style === 'embed' ? 'Embed (rich card with reward image)' : 'Default (text + auto-embed)';
+      await interaction.reply({
+        embeds: [{
+          color: 0x5865F2,
+          title: '✅ Notification Style Updated',
+          description: `New quest notifications will now be sent as **${label}**.`,
+          footer: { text: 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString(),
+        }],
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.commandName === 'quest-test') {
+      if (interaction.user.id !== ADMIN_USER_ID) {
+        return await interaction.reply({ content: '❌ This command is restricted to the bot admin.', ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const styleOverride = interaction.options.getString('style');
+      const count = interaction.options.getInteger('count') || 1;
+      const style = styleOverride || guildSettings.get(interaction.guildId)?.notificationStyle || 'default';
+
+      // Always fetch fresh from JSON so imageUrl and all fields are populated
+      let questPool = [];
+      try {
+        const axios = require('axios');
+        const QUESTS_JSON_URL = 'https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json';
+        const response = await axios.get(QUESTS_JSON_URL, { timeout: 15000 });
+        const now = new Date();
+        const TASK_LABELS = {
+          WATCH_VIDEO: 'Video', WATCH_VIDEO_ON_DESKTOP: 'Video (Desktop)', WATCH_VIDEO_ON_MOBILE: 'Video (Mobile)',
+          PLAY_ON_DESKTOP: 'Desktop', STREAM_ON_DESKTOP: 'Desktop (Stream)',
+          PLAY_ON_MOBILE: 'Mobile', PLAY_ON_PLAYSTATION: 'PlayStation', PLAY_ON_XBOX: 'Xbox',
+          PLAY_ON_SWITCH: 'Switch', COMPLETE_ACHIEVEMENT: 'Achievement', PLAY_ACTIVITY: 'Activity',
+        };
+        const cdnUrl = (questId, assetPath) => {
+          if (!assetPath) return null;
+          return assetPath.startsWith('quests/')
+            ? `https://cdn.discordapp.com/${assetPath}`
+            : `https://cdn.discordapp.com/quests/${questId}/${assetPath}`;
+        };
+
+        const maxExpiry = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000);
+
+        questPool = response.data
+          .filter(e => e.config?.starts_at && e.config?.expires_at)
+          .filter(e => {
+            const start = new Date(e.config.starts_at);
+            const expire = new Date(e.config.expires_at);
+            // Active + not a permanent demo quest (expires within 180 days)
+            return start <= now && expire > now && expire <= maxExpiry;
+          })
+          .sort((a, b) => new Date(b.config.starts_at) - new Date(a.config.starts_at))
+          .map(e => {
+            const cfg = e.config;
+            const rewards = cfg.rewards_config?.rewards || cfg.rewards || [];
+            const r = rewards[0];
+            let reward = 'Unknown';
+            if (r?.orb_quantity != null) {
+              reward = `${r.orb_quantity} Discord Orbs${r.premium_orb_quantity != null ? ` (Nitro: ${r.premium_orb_quantity} Orbs)` : ''}`;
+            } else {
+              reward = r?.messages?.name || r?.name || 'Unknown';
+            }
+            const taskKeys = Object.keys(cfg.task_config_v2?.tasks || cfg.task_config?.tasks || {});
+            const hasSpecificVideo = taskKeys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
+            const tasks = taskKeys
+              .filter(k => !(k === 'WATCH_VIDEO' && hasSpecificVideo))
+              .map(k => TASK_LABELS[k] || k);
+
+            // Reward asset if present (mp4/webm included), otherwise Orbs GIF
+            const imageUrl = r?.asset ? cdnUrl(e.id, r.asset) : 'https://cdn3.emoji.gg/emojis/44565-orbs-animated.gif';
+
+            return {
+              id: e.id,
+              name: cfg.messages?.quest_name || 'Unknown',
+              game: cfg.messages?.game_title || cfg.application?.name || null,
+              reward, tasks, imageUrl,
+              startsAt: cfg.starts_at,
+              expiresAt: cfg.expires_at,
+            };
+          });
+      } catch (err) {
+        // Fall back to knownQuests if fetch fails
+        console.warn('⚠️  quest-test: JSON fetch failed, using knownQuests:', err.message);
+        questPool = Array.from(knownQuests.values());
+      }
+
+      const selected = questPool.slice(0, count);
+      if (selected.length === 0) {
+        await interaction.editReply({ content: '❌ No quests available to test with.' });
+        return;
+      }
+
+      const channel = interaction.channel;
+      const styleLabel = style === 'embed' ? 'Embed' : 'Default';
+      await channel.send(`🧪 **Quest notification test** — Style: **${styleLabel}** (${selected.length} quest${selected.length > 1 ? 's' : ''})`);
+
+      for (const quest of selected) {
+        const payload = buildQuestPayload(quest, style);
+        await channel.send(payload);
+      }
+
+      await interaction.editReply({ content: `✅ Sent ${selected.length} test notification${selected.length > 1 ? 's' : ''} to <#${channel.id}> using **${styleLabel}** style.` });
+    }
+
     if (interaction.commandName === 'dm-notifications-old') {
       // This is the old button-based handler - kept for backward compatibility with existing buttons
       // New users will use the command above instead
@@ -1811,6 +2112,49 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
   }
 });
 
+// Build the Discord message payload for a quest notification.
+// Returns { content, embeds } ready for channel.send().
+function buildQuestPayload(questData, style, pingContent = '') {
+  const questLink = `https://discord.com/quests/${questData.id}`;
+  const rel = formatRelative(questData.expiresAt);
+  const abs = formatDate(questData.expiresAt);
+  const expiryText = rel ? `${abs} (${rel})` : (abs || 'Unknown');
+
+  if (style === 'embed') {
+    const fields = [];
+    if (questData.tasks?.length > 0) {
+      fields.push({ name: '📱 Task', value: questData.tasks.join(' / '), inline: true });
+    }
+    fields.push({ name: '⏰ Expires', value: expiryText, inline: true });
+
+    const embed = {
+      color: 0x5865F2,
+      author: questData.game ? { name: `🎮 ${questData.game}` } : undefined,
+      title: questData.name,
+      url: questLink,
+      description: `🏆 ${questData.reward || 'Unknown'}`,
+      fields,
+      footer: { text: 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+      timestamp: new Date().toISOString(),
+    };
+    if (questData.imageUrl) embed.thumbnail = { url: questData.imageUrl };
+
+    return { content: pingContent || undefined, embeds: [embed] };
+  }
+
+  // Default style
+  let content = `🎯 **New Quest Detected!**\n${pingContent}`;
+  const infoLines = [];
+  if (questData.tasks?.length > 0) {
+    infoLines.push(`**Task(s):** ${questData.tasks.join(' / ')}`);
+  }
+  if (questData.expiresAt) {
+    infoLines.push(`**Expires:** ${expiryText}`);
+  }
+  if (infoLines.length > 0) content += infoLines.join(' | ') + '\n';
+  return { content: content + questLink };
+}
+
 async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all') {
   try {
     console.log(`  📤 Attempting to send to channel ${channelId} with filter: ${questFilter}`);
@@ -1850,29 +2194,29 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
       return;
     }
     
-    // Create message with quest link - Discord will auto-embed it
-    const questLink = `https://discord.com/quests/${questData.id}`;
-    
-    // Get the quest ping role if set for this guild
-    let pingContent = '🎯 New quest detected!\n';
+    const notificationStyle = guildSettings.get(guildId)?.notificationStyle || 'default';
+
+    let pingContent = '';
     if (guildId) {
       const questPingRoleId = guildSettings.get(guildId)?.questPingRoleId;
-      if (questPingRoleId) {
-        pingContent += `<@&${questPingRoleId}>\n`;
-      }
+      if (questPingRoleId) pingContent = `<@&${questPingRoleId}>\n`;
     }
-    
-    const message = await channel.send(pingContent + questLink);
-    
-    console.log(`  ✅ Sent to <#${channelId}>`);
-    
+
+    const payload = buildQuestPayload(questData, notificationStyle, pingContent);
+    const message = await channel.send(payload);
+
+    console.log(`  ✅ Sent to <#${channelId}> [${notificationStyle}]`);
+
     // Track this quest
     knownQuests.set(questData.id, {
       id: questData.id,
       name: questData.name,
+      game: questData.game || null,
       reward: questData.reward,
+      tasks: questData.tasks || [],
+      imageUrl: questData.imageUrl || null,
       type: questData.type,
-      buttonLabel: questData.buttonLabel,
+      startsAt: questData.startsAt || null,
       expiresAt: questData.expiresAt,
       detectedAt: questData.detectedAt || new Date().toLocaleString(),
       messageId: message.id,
@@ -1926,7 +2270,9 @@ async function sendDMNotifications(questData) {
       try {
         const user = await client.users.fetch(userId);
         const questLink = `https://discord.com/quests/${questData.id}`;
-        const dmMessage = `🎯 **New Quest Detected!**\n\n**${questData.name}**\n${questData.reward}\n\n${questLink}`;
+        const taskLine = questData.tasks?.length > 0 ? `\nTask(s): ${questData.tasks.join(' / ')}` : '';
+        const expiryLine = questData.expiresAt ? `\nExpires: ${formatDate(questData.expiresAt)}` : '';
+        const dmMessage = `🎯 **New Quest Detected!**\n\n**${questData.name}**\nReward: ${questData.reward}${taskLine}${expiryLine}\n\n${questLink}`;
         
         await user.send(dmMessage);
         sentCount++;
@@ -2371,46 +2717,51 @@ app.post('/webhook/quests', async (req, res) => {
     
     // Helper function to check if a quest is actually expired based on the date
     function isQuestActuallyExpired(expiresAt) {
-      // expiresAt format: "9.3." (Day.Month.)
-      if (!expiresAt || expiresAt === 'Unknown') {
-        return false;
+      if (!expiresAt || expiresAt === 'Unknown') return false;
+
+      // ISO 8601 format - direct comparison
+      if (expiresAt.includes('T') || (expiresAt.includes('-') && expiresAt.length > 7)) {
+        return new Date(expiresAt).getTime() <= Date.now();
       }
-      
+
       const today = new Date();
       const currentDay = today.getDate();
-      const currentMonth = today.getMonth() + 1; // getMonth returns 0-11
+      const currentMonth = today.getMonth() + 1;
       const currentYear = today.getFullYear();
-      
-      // Parse the date from format "9.3." or similar
-      const parts = expiresAt.split('.');
-      if (parts.length < 2) {
+
+      let expireDay, expireMonth, expireYear = currentYear;
+
+      if (expiresAt.includes('.')) {
+        const parts = expiresAt.split('.');
+        if (parts.length < 2) return false;
+        expireDay = parseInt(parts[0]);
+        expireMonth = parseInt(parts[1]);
+      } else if (expiresAt.includes('/')) {
+        const parts = expiresAt.split('/');
+        if (parts.length < 2) return false;
+        expireMonth = parseInt(parts[0]);
+        expireDay = parseInt(parts[1]);
+        if (parts.length === 3) expireYear = parseInt(parts[2]);
+      } else {
         return false;
       }
-      
-      const expireDay = parseInt(parts[0]);
-      const expireMonth = parseInt(parts[1]);
-      
-      // Create comparison: if no year is specified, assume current year
-      const expireYear = currentYear;
-      
-      // Compare dates
-      if (expireMonth < currentMonth) {
-        return true; // Already passed this month
-      } else if (expireMonth === currentMonth && expireDay <= currentDay) {
-        return true; // Same month but day has passed (including today)
+
+      if (expireYear < currentYear) return true;
+      if (expireYear === currentYear) {
+        if (expireMonth < currentMonth) return true;
+        if (expireMonth === currentMonth && expireDay <= currentDay) return true;
       }
-      
-      return false; // Not expired yet
+      return false;
     }
     
     // Track which quests are currently sent by scraper
     const currentQuestIds = new Set(quests.map(q => q.id));
     
-    // Find quests that were active but are no longer sent (expired)
+    // Find quests that were active but are no longer sent (expired/deleted by Discord)
     const expiredQuestsList = [];
     knownQuests.forEach((quest, questId) => {
-      // Only mark as expired if it's actually past the expiration date
-      if (!currentQuestIds.has(questId) && isQuestActuallyExpired(quest.expiresAt)) {
+      // Mark as expired if it's no longer sent by scraper (regardless of original expiry date)
+      if (!currentQuestIds.has(questId)) {
         expiredQuestsList.push(quest);
         // Move to expired quests
         expiredQuests.set(questId, quest);
@@ -2516,17 +2867,37 @@ app.post('/webhook/quests', async (req, res) => {
         }
       } else {
         console.log(`  ℹ️  EXISTING: ${quest.name}`);
+        // Refresh fields that may have changed or been missing from old scraper data
+        const existingQuest = knownQuests.get(quest.id);
+        if (existingQuest) {
+          if (existingQuest.expiresAt !== quest.expiresAt) {
+            console.log(`  🔄 Updated expiration date: ${existingQuest.expiresAt} → ${quest.expiresAt}`);
+            existingQuest.expiresAt = quest.expiresAt;
+          }
+          if (quest.imageUrl && existingQuest.imageUrl !== quest.imageUrl) {
+            console.log(`  🖼️  Updated imageUrl for ${quest.name}`);
+            existingQuest.imageUrl = quest.imageUrl;
+          }
+          if (quest.tasks?.length > 0 && (!existingQuest.tasks || existingQuest.tasks.length === 0)) {
+            existingQuest.tasks = quest.tasks;
+          }
+          if (quest.game && !existingQuest.game) {
+            existingQuest.game = quest.game;
+          }
+        }
       }
       
-      // Only update quest data for new quests (to keep original detection time)
-      // For existing quests, they're already in knownQuests
+      // Add new quest to knownQuests
       if (isNew) {
         knownQuests.set(quest.id, {
           id: quest.id,
           name: quest.name,
+          game: quest.game || null,
           reward: quest.reward,
+          tasks: quest.tasks || [],
+          imageUrl: quest.imageUrl || null,
           type: quest.type,
-          buttonLabel: quest.buttonLabel,
+          startsAt: quest.startsAt || null,
           expiresAt: quest.expiresAt,
           detectedAt: quest.detectedAt || new Date().toLocaleString(),
         });
