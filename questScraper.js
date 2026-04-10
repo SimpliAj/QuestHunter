@@ -1,4 +1,3 @@
-const puppeteer = require('puppeteer');
 const axios = require('axios');
 const dotenv = require('dotenv');
 const fs = require('fs');
@@ -6,769 +5,277 @@ const path = require('path');
 
 dotenv.config();
 
-const USER_TOKEN = process.env.USER_TOKEN;
+const QUESTS_JSON_URL = 'https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json';
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://localhost:3001/webhook/quests';
 const ERROR_WEBHOOK = process.env.ERROR_WEBHOOK;
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
-const SCAN_INTERVAL = process.env.SCRAPER_INTERVAL || 3600000; // 1 hour default
-const USE_ACCOUNTS_FILE = process.env.USE_ACCOUNTS_FILE === 'true'; // Enable/disable accounts.txt
+const SCAN_INTERVAL = parseInt(process.env.SCRAPER_INTERVAL) || 1800000; // 30 min default
 
-const QUEST_PAGE_URL = 'https://discord.com/quest-home?sort=most_recent';
 const NOTIFIED_QUESTS_FILE = path.join(__dirname, 'data', 'notified_quests.json');
-const ACCOUNTS_FILE = path.join(__dirname, 'accounts.txt');
-const ACCOUNT_INDEX_FILE = path.join(__dirname, 'data', 'account_index.json');
+const LAST_SCAN_FILE = path.join(__dirname, 'data', 'last_scan.json');
 
-// Account rotation system
-let currentAccountIndex = 0;
-let allAccounts = [];
+const TASK_LABELS = {
+  WATCH_VIDEO: 'Video',
+  WATCH_VIDEO_ON_DESKTOP: 'Video (Desktop)',
+  WATCH_VIDEO_ON_MOBILE: 'Video (Mobile)',
+  PLAY_ON_DESKTOP: 'Desktop',
+  STREAM_ON_DESKTOP: 'Desktop (Stream)',
+  PLAY_ON_MOBILE: 'Mobile',
+  PLAY_ON_PLAYSTATION: 'PlayStation',
+  PLAY_ON_XBOX: 'Xbox',
+  PLAY_ON_SWITCH: 'Switch',
+  COMPLETE_ACHIEVEMENT: 'Achievement',
+  PLAY_ACTIVITY: 'Activity',
+};
 
-// Load accounts from file
-function loadAccounts() {
-  if (!USE_ACCOUNTS_FILE) {
-    console.log('⚠️  USE_ACCOUNTS_FILE is disabled in .env - only using USER_TOKEN');
-    return false;
-  }
-  
-  try {
-    if (fs.existsSync(ACCOUNTS_FILE)) {
-      const content = fs.readFileSync(ACCOUNTS_FILE, 'utf8');
-      allAccounts = content.split('\n').filter(line => line.trim()).map((line, index) => {
-        const parts = line.split(':');
-        return {
-          email: parts[0],
-          emailPass: parts[1],
-          password: parts[2],
-          token: parts[3],
-          originalLine: line,  // Store original line for later
-          lineIndex: index
-        };
-      });
-      console.log(`✅ Loaded ${allAccounts.length} accounts from accounts.txt`);
-      
-      // Load last account index
-      try {
-        if (fs.existsSync(ACCOUNT_INDEX_FILE)) {
-          const data = JSON.parse(fs.readFileSync(ACCOUNT_INDEX_FILE, 'utf8'));
-          currentAccountIndex = data.index || 0;
-        }
-      } catch (error) {
-        console.warn('⚠️  Could not load account index, starting from 0');
-        currentAccountIndex = 0;
-      }
-      
-      return true;
-    }
-  } catch (error) {
-    console.error('❌ Error loading accounts:', error.message);
-  }
-  return false;
-}
-
-// Mark account as invalid and save to used_tokens.txt
-function saveInvalidAccount(account) {
-  try {
-    const invalidTokensFile = path.join(__dirname, 'used_tokens.txt');
-    const dataDir = path.join(__dirname, 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-    
-    // Append the original line to used_tokens.txt with timestamp
-    const timestamp = new Date().toISOString();
-    const line = `${account.originalLine} # INVALID - ${timestamp}\n`;
-    fs.appendFileSync(invalidTokensFile, line);
-    console.log(`📝 Saved invalid account to used_tokens.txt: ${account.email}`);
-  } catch (error) {
-    console.error('❌ Error saving invalid account:', error.message);
-  }
-}
-
-// Get current token (from accounts.txt or fallback to .env)
-function getCurrentToken() {
-  if (allAccounts.length === 0) {
-    console.log('⚠️  No accounts in accounts.txt, using USER_TOKEN from .env as fallback');
-    return USER_TOKEN;
-  }
-  return allAccounts[currentAccountIndex].token;
-}
-
-// Get current account info or fallback message
-function getCurrentAccountInfo() {
-  if (allAccounts.length === 0) {
-    return { email: 'USER_TOKEN (from .env)', isFallback: true };
-  }
-  return { email: allAccounts[currentAccountIndex].email, isFallback: false };
-}
-
-// Move to next account and save index
-function nextAccount() {
-  currentAccountIndex = (currentAccountIndex + 1) % allAccounts.length;
-  try {
-    const dataDir = path.join(__dirname, 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-    fs.writeFileSync(ACCOUNT_INDEX_FILE, JSON.stringify({ index: currentAccountIndex }, null, 2));
-  } catch (error) {
-    console.error('❌ Error saving account index:', error.message);
-  }
-}
-
-// Load accounts on startup
-loadAccounts();
-
-// Show which account is being used on startup
-function logAccountSetup() {
-  const accountInfo = getCurrentAccountInfo();
-  if (accountInfo.isFallback) {
-    console.log(`✅ Using USER_TOKEN from .env (fallback)`);
-  } else {
-    const tokenPreview = getCurrentToken().substring(0, 20) + '...';
-    console.log(`✅ Using account #${currentAccountIndex + 1}: ${accountInfo.email} (Token: ${tokenPreview})`);
-  }
-}
-// Send error alerts to webhook
 async function sendErrorAlert(title, description, severity = 'warning') {
   if (!ERROR_WEBHOOK) return;
-  
+  const colors = { critical: 0xFF0000, warning: 0xFFA500, info: 0x3498DB };
   try {
-    const colors = {
-      critical: 0xFF0000, // Red
-      warning: 0xFFA500,  // Orange
-      info: 0x3498DB      // Blue
-    };
-
     await axios.post(ERROR_WEBHOOK, {
       embeds: [{
         title: `🚨 ${title}`,
-        description: description,
+        description,
         color: colors[severity] || colors.warning,
         timestamp: new Date().toISOString(),
-        footer: {
-          text: 'QuestFinder Error Alert'
-        }
+        footer: { text: 'QuestFinder Error Alert' }
       }]
     });
-  } catch (error) {
-    console.error('❌ Failed to send error alert:', error.message);
+  } catch (e) {
+    console.error('❌ Failed to send error alert:', e.message);
   }
 }
 
-// Load notified quest IDs
 function loadNotifiedQuestIds() {
   try {
     if (fs.existsSync(NOTIFIED_QUESTS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(NOTIFIED_QUESTS_FILE, 'utf8'));
-      return new Set(data);
+      return new Set(JSON.parse(fs.readFileSync(NOTIFIED_QUESTS_FILE, 'utf8')));
     }
-  } catch (error) {
-    console.warn('⚠️  Could not load notified quest IDs:', error.message);
+  } catch (e) {
+    console.warn('⚠️  Could not load notified quest IDs:', e.message);
   }
   return new Set();
 }
 
-// Save notified quest IDs
-function saveNotifiedQuestIds(questIds) {
+function saveNotifiedQuestIds(ids) {
   try {
-    const dataDir = path.join(__dirname, 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-    fs.writeFileSync(NOTIFIED_QUESTS_FILE, JSON.stringify(Array.from(questIds), null, 2));
-  } catch (error) {
-    console.error('❌ Failed to save notified quest IDs:', error.message);
+    fs.mkdirSync(path.dirname(NOTIFIED_QUESTS_FILE), { recursive: true });
+    fs.writeFileSync(NOTIFIED_QUESTS_FILE, JSON.stringify(Array.from(ids), null, 2));
+  } catch (e) {
+    console.error('❌ Failed to save notified quest IDs:', e.message);
   }
 }
 
-let notifiedQuestIds = loadNotifiedQuestIds();
-const LAST_SCAN_FILE = path.join(__dirname, 'data', 'last_scan.json');
-
-// Load last scan time
 function loadLastScanTime() {
   try {
     if (fs.existsSync(LAST_SCAN_FILE)) {
-      const data = JSON.parse(fs.readFileSync(LAST_SCAN_FILE, 'utf8'));
-      return data.lastScanTime || 0;
+      return JSON.parse(fs.readFileSync(LAST_SCAN_FILE, 'utf8')).lastScanTime || 0;
     }
-  } catch (error) {
-    console.warn('⚠️  Could not load last scan time:', error.message);
-  }
+  } catch (e) {}
   return 0;
 }
 
-// Save last scan time
 function saveLastScanTime() {
   try {
-    const dataDir = path.join(__dirname, 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
+    fs.mkdirSync(path.dirname(LAST_SCAN_FILE), { recursive: true });
     fs.writeFileSync(LAST_SCAN_FILE, JSON.stringify({
       lastScanTime: Date.now(),
       lastScanDate: new Date().toISOString()
     }, null, 2));
-  } catch (error) {
-    console.error('❌ Failed to save last scan time:', error.message);
+  } catch (e) {
+    console.error('❌ Failed to save last scan time:', e.message);
   }
 }
 
-function parseQuestTypeFromButton(buttonText) {
-  const lowerText = buttonText.toLowerCase();
-  
-  // Detect quest type from button text
-  // German patterns
-  if (lowerText.includes('video') || lowerText.includes('schauen')) return 'WATCH_VIDEO';
-  if (lowerText.includes('annehmen') || lowerText.includes('quest annehmen')) return 'PLAY_ON_DESKTOP';
-  if (lowerText.includes('starten') || lowerText.includes('quest starten')) return 'PLAY_ON_DESKTOP';
-  
-  // English patterns
-  if (lowerText.includes('watch')) return 'WATCH_VIDEO';
-  if (lowerText.includes('play') || lowerText.includes('claim')) return 'PLAY_ON_DESKTOP';
-  if (lowerText.includes('accept') || lowerText.includes('accept quest')) return 'PLAY_ON_DESKTOP';
-  
-  // Default
-  return 'UNKNOWN';
+let notifiedQuestIds = loadNotifiedQuestIds();
+
+function parseReward(config) {
+  const rewards = config.rewards_config?.rewards || config.rewards || [];
+  if (rewards.length === 0) return null;
+
+  const reward = rewards[0];
+
+  // Discord Orbs
+  if (reward.orb_quantity != null) {
+    let text = `${reward.orb_quantity} Discord Orbs`;
+    if (reward.premium_orb_quantity != null) {
+      text += ` (Nitro: ${reward.premium_orb_quantity} Orbs)`;
+    }
+    return text;
+  }
+
+  // Named reward (game item or decoration)
+  const name = reward.messages?.name || reward.name;
+  if (name) return name;
+
+  return null;
 }
 
-function extractQuestsFromHTML(html) {
-  const quests = [];
-  
-  // Debug: Check if HTML contains quest content
-  if (!html.includes('quest-tile')) {
-    console.log('⚠️  HTML does not contain quest tiles');
-    console.log(`📄 HTML length: ${html.length} characters`);
-    // Check if it's a login page
-    if (html.includes('login') || html.includes('signin')) {
-      console.log('❌ HTML appears to be a login page - token may be invalid or expired');
-    }
-    return quests;
+function parseTasks(config) {
+  const keys = Object.keys(config.task_config_v2?.tasks || config.task_config?.tasks || {});
+  // Drop generic WATCH_VIDEO if a platform-specific variant is also present
+  const hasSpecificVideo = keys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
+  return keys
+    .filter(k => !(k === 'WATCH_VIDEO' && hasSpecificVideo))
+    .map(k => TASK_LABELS[k] || k);
+}
+
+function buildCdnUrl(questId, assetPath) {
+  if (!assetPath) return null;
+  // Some assets already include the full path e.g. "quests/123/456.mp4"
+  if (assetPath.startsWith('quests/')) {
+    return `https://cdn.discordapp.com/${assetPath}`;
   }
-  
-  // Extract quest tiles more robustly using a different approach
-  // Match the complete div container for each quest
-  const questTileRegex = /<div[^>]*id="quest-tile-(\d+)"[^>]*class="[^"]*questTile[^"]*"[^>]*>[\s\S]*?<\/div>\s*(?=<div[^>]*id="quest-tile-|$)/g;
-  
-  const allMatches = [...html.matchAll(questTileRegex)];
-  console.log(`📍 Found ${allMatches.length} quest tile divs in HTML`);
-  
-  // Alternative: Use a simpler approach - find all quest tile IDs first
-  const questIdMatches = [...html.matchAll(/id="quest-tile-(\d+)"/g)];
-  console.log(`📊 Found ${questIdMatches.length} quest IDs in HTML`);
-  
-  let skippedCount = 0;
-  let processedCount = 0;
-  
-  for (let i = 0; i < questIdMatches.length; i++) {
-    const tileMatch = questIdMatches[i];
-    const questId = tileMatch[1];
-    const tileStart = tileMatch.index;
-    
-    // Debug: Log specific quest IDs we're looking for
-    if (['1473407935970410724', '1471215421297266778', '1471627613574533173', '1471589719186870377'].includes(questId)) {
-      console.log(`  🔍 Processing quest ${questId}...`);
-    }
-    
-    // Find the end of this quest tile - look for the next "quest-tile" OR the closing div
-    // Search more carefully to find where this specific quest container ends
-    let tileEnd;
-    if (i < questIdMatches.length - 1) {
-      // There's a next quest - find where this one ends before the next one starts
-      const nextTileStart = questIdMatches[i + 1].index;
-      // Go back from nextTileStart to find the closing </div> that belongs to this quest
-      let searchStart = nextTileStart - 1;
-      let divCount = 0;
-      while (searchStart > tileStart) {
-        if (html[searchStart] === '>' && html[searchStart - 1] === '/' && html[searchStart - 2] === 'v' && html[searchStart - 3] === 'i' && html[searchStart - 4] === 'd') {
-          divCount++;
-          if (divCount >= 1) {
-            tileEnd = searchStart + 1;
-            break;
-          }
-        }
-        searchStart--;
-      }
-      if (!tileEnd) tileEnd = nextTileStart;
-    } else {
-      // Last quest - include everything until the end
-      tileEnd = html.length;
-    }
-    
-    const tileSection = html.substring(tileStart, tileEnd);
-    
-    // Debug: Show what we extracted
-    if (tileSection.length < 100) {
-      console.log(`  ⚠️  Quest ${questId} has very short extraction (${tileSection.length} chars) - might be parsing error`);
-    }
-    
-    // Debug: Check if button element exists
-    const hasButton = tileSection.includes('<button');
-    if (!hasButton) {
-      console.log(`  ⚠️  Quest ${questId} - No button element found in tile section`);
-    }
-    
-    // Extract quest name - try multiple patterns
-    let questName = 'Unknown';
-    const nameMatch = tileSection.match(/<h2[^>]*class="[^"]*questName[^"]*"[^>]*>([^<]+)<\/h2>/);
-    if (nameMatch) {
-      questName = nameMatch[1].trim();
-    } else {
-      // Fallback: look for any h2 tag
-      const h2Match = tileSection.match(/<h2[^>]*>([^<]+)<\/h2>/);
-      if (h2Match) {
-        questName = h2Match[1].trim();
-      }
-    }
-    
-    // Log EVERY quest found, regardless of status
-    console.log(`  📌 Quest ${questId}: ${questName}`);
-    
-    // Extract reward - MUST match one of the patterns, NO FALLBACK
-    let reward = null;
-    
-    // The HTML structure is:
-    // For Orbs: <span>NUMBER</span> Discord Orbs
-    // For other rewards: <span>REWARD_NAME</span> beanspruchen
-    
-    // Pattern 1: Discord Orbs - exact match with closing tag
-    const orbPattern = tileSection.match(/>(\d+)<\/span>\s*Discord Orbs/);
-    if (orbPattern) {
-      const orbsAmount = parseInt(orbPattern[1]);
-      reward = `${orbsAmount} Discord Orbs`;
-      console.log(`  💰 ${questName}: ${orbsAmount} Discord Orbs`);
-    }
-    
-    // Pattern 2: Non-Orb reward - nested span structure (e.g., Claim <span>a Razeshi C. Pet</span>)
+  return `https://cdn.discordapp.com/quests/${questId}/${assetPath}`;
+}
+
+const ORBS_GIF = 'https://cdn3.emoji.gg/emojis/44565-orbs-animated.gif';
+
+
+function getImageUrl(questId, config) {
+  const rewards = config.rewards_config?.rewards || config.rewards || [];
+  const r = rewards[0];
+
+  // Reward asset if present (mp4/webm included), otherwise Orbs GIF
+  if (r?.asset) return buildCdnUrl(questId, r.asset);
+  return ORBS_GIF;
+}
+
+function parseActiveQuests(allQuests) {
+  const now = new Date();
+  // Sort newest starts_at first so real/recent quests take priority over permanent demo quests
+  const sorted = [...allQuests].sort((a, b) =>
+    new Date(b.config?.starts_at || 0) - new Date(a.config?.starts_at || 0)
+  );
+  const active = [];
+
+  for (const entry of sorted) {
+    const config = entry.config;
+    if (!config || !config.starts_at || !config.expires_at) continue;
+
+    const startsAt = new Date(config.starts_at);
+    const expiresAt = new Date(config.expires_at);
+
+    const maxExpiry = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000);
+    if (startsAt > now || expiresAt <= now || expiresAt > maxExpiry) continue;
+
+    const reward = parseReward(config);
     if (!reward) {
-      // Look for pattern: header__956c6...>...<span...>REWARD_TEXT</span>
-      // This handles nested spans like: Claim <span>a Razeshi C. Pet</span>
-      const nestedSpanMatch = tileSection.match(/header__956c6[^>]*>[\s\S]*?<span[^>]*>([^<]+)<\/span>/);
-      if (nestedSpanMatch) {
-        const potentialReward = nestedSpanMatch[1].trim();
-        if (potentialReward && potentialReward.length > 2) {
-          reward = potentialReward;
-          console.log(`  🎁 ${questName}: ${reward}`);
-        }
-      }
-    }
-    
-    // Pattern 3: German "Beanspruche" pattern - text in span after "Beanspruche"
-    if (!reward) {
-      const beanspruchMatch = tileSection.match(/(?:Beanspruche|Claim)\s+<span[^>]*>([^<]+)<\/span>/i);
-      if (beanspruchMatch) {
-        const potentialReward = beanspruchMatch[1].trim();
-        // Make sure it's not just styling information
-        if (potentialReward && !potentialReward.startsWith('style=') && potentialReward.length > 2) {
-          reward = potentialReward;
-          console.log(`  🎁 ${questName}: ${reward}`);
-        }
-      }
-    }
-    
-    // If still no reward found, log critical error but don't use fallback
-    if (!reward) {
-      console.error(`  ❌ CRITICAL: Could not extract reward for quest ${questId} (${questName})`);
-      console.error(`     First 200 chars of tile: ${tileSection.substring(0, 200)}`);
-      continue; // Skip this quest entirely instead of using fallback
-    }
-    
-    // Extract expiration date - support both German and English patterns
-    let expiresAt = 'Unknown';
-    
-    // German patterns: "Endet" or "Quest endet am" (e.g., "3.3." or "3.3")
-    const expireMatch1 = tileSection.match(/(?:Endet|endet am)\s+(\d+)\.(\d+)\.?/i);
-    if (expireMatch1) {
-      // Convert German format (DD.MM) to standardized format (MM/DD)
-      const day = expireMatch1[1];
-      const month = expireMatch1[2];
-      expiresAt = `${month}/${day}`;
-    } else {
-      // English patterns: "Expires" or "Ends" (e.g., "3/3" or "3/3/2026")
-      const expireMatch2 = tileSection.match(/(?:Expires?|Ends?)\s+(?:on\s+)?(\d+\/\d+(?:\/\d+)?)/i);
-      if (expireMatch2) {
-        expiresAt = expireMatch2[1];
-      }
-    }
-    
-    // Extract button text - look for the actual button text
-    let buttonText = 'Unknown';
-    
-    // Pattern 1: Look for span with specific class inside button (for "Quest annehmen" buttons)
-    const buttonMatch1 = tileSection.match(/<button[^>]*>[\s\S]*?<span[^>]*class="[^"]*lineClamp1[^"]*"[^>]*>([^<]+)<\/span>/);
-    if (buttonMatch1) {
-      buttonText = buttonMatch1[1].trim();
-    } else {
-      // Pattern 2: Just find any span with lineClamp1 class (for "Quest annehmen" buttons)
-      const buttonMatch2 = tileSection.match(/<span[^>]*class="[^"]*lineClamp1[^"]*"[^>]*>([^<]+)<\/span>/);
-      if (buttonMatch2) {
-        buttonText = buttonMatch2[1].trim();
-      } else {
-        // Pattern 3: Look for hiddenVisually span (for "Video-Quest starten" buttons with different structure)
-        const buttonMatch3 = tileSection.match(/<span[^>]*class="[^"]*hiddenVisually[^"]*"[^>]*>([^<]+)<\/span>/);
-        if (buttonMatch3) {
-          buttonText = buttonMatch3[1].trim();
-        }
-      }
-    }
-    
-    // Debug: Show button text for problematic quests
-    if (['1473407935970410724', '1471215421297266778', '1471627613574533173', '1471589719186870377', '1470483893688991745'].includes(questId)) {
-      console.log(`  🔍 Quest ${questId} extracted button text: "${buttonText}"`);
-    }
-    
-    // Check if quest is expired by looking for expiration text in button
-    // German: "Quest endet am X.X." / "endet am X.X."
-    // English: "Quest ended X/X", "ended X/X", "Ends on X.X.", "Quest Ends X/X", etc.
-    const isExpiredQuest = buttonText.match(/^(Quest )?(ended?|endet am|Ends? on)/i);
-    if (isExpiredQuest) {
-      console.log(`  ⏰ Quest ${questId} expired: "${buttonText}" (skipping)`);
-      skippedCount++;
+      console.warn(`  ⚠️  Quest ${entry.id} has no parseable reward, skipping`);
       continue;
     }
-    
-    // Log if we're processing a previously missing quest
-    if (['1473407935970410724', '1471215421297266778', '1471627613574533173', '1471589719186870377'].includes(questId)) {
-      console.log(`  ✅ Found missing quest ${questId} with button: "${buttonText}"`);
-    }
-    
-    const questType = parseQuestTypeFromButton(buttonText);
-    
-    if (questName === 'Unknown' || buttonText === 'Unknown') {
-      console.log(`  ⚠️  Quest ${questId} - Failed to extract full info (name: ${questName}, button: "${buttonText}")`);
-      // Debug: Show first 500 chars of tile section
-      console.log(`     Section preview: ${tileSection.substring(0, 500)}`);
-    }
-    
-    console.log(`  ✓ Found active quest: ${questName} (Expires: ${expiresAt}, Type: ${questType})`);
-    
-    quests.push({
-      id: questId,
-      name: questName,
-      reward: reward,
-      expiresAt,
-      type: questType,
-      buttonLabel: buttonText
+
+    const tasks = parseTasks(config);
+    const name = config.messages?.quest_name || 'Unknown';
+    const game = config.messages?.game_title || config.application?.name || 'Unknown';
+    const imageUrl = getImageUrl(entry.id, config);
+
+    active.push({
+      id: entry.id,
+      name,
+      game,
+      reward,
+      tasks,
+      imageUrl,
+      startsAt: config.starts_at,
+      expiresAt: config.expires_at,
+      detectedAt: new Date().toLocaleString(),
+      isNew: !notifiedQuestIds.has(entry.id),
     });
-    processedCount++;
   }
-  
-  console.log(`📈 Processed: ${processedCount} active, Skipped: ${skippedCount} expired`);
-  console.log(`✅ Scan completed with account #${currentAccountIndex + 1}`);
-  
-  return quests;
-}
 
-async function fetchQuests(retryCount = 0, maxRetries = allAccounts.length) {
-  const currentToken = getCurrentToken();
-  const accountInfo = getCurrentAccountInfo();
-  
-  // Validate token before using it
-  if (!currentToken || typeof currentToken !== 'string' || currentToken.trim() === '') {
-    const errorMsg = 'No valid token available - USER_TOKEN is missing or invalid in .env';
-    console.error(`❌ ${errorMsg}`);
-    await sendErrorAlert('Token Validation Failed', errorMsg, 'critical');
-    throw new Error(errorMsg);
-  }
-  
-  if (accountInfo.isFallback) {
-    console.log(`🔑 All accounts.txt tokens exhausted - Using USER_TOKEN from .env as FALLBACK`);
-  } else {
-    console.log(`🔑 Using account: ${accountInfo.email} (${currentAccountIndex + 1}/${allAccounts.length})${retryCount > 0 ? ` [Retry ${retryCount}/${maxRetries}]` : ''}`);
-  }
-  
-  try {
-    let localBrowser;
-    try {
-      console.log('🔍 Scanning for new quests...');
-      console.log('📄 Launching Puppeteer browser...');
-      console.log(`⏱️  Browser launch timeout: 60 seconds`);
-      
-      // Add explicit timeout for browser launch
-      const launchPromise = puppeteer.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-web-resources',
-          '--disable-extensions',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-dev-shm-usage'
-        ],
-        timeout: 60000
-      });
-
-      localBrowser = await Promise.race([
-        launchPromise,
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Puppeteer launch timeout (60s)')), 65000)
-        )
-      ]);
-
-      console.log('✅ Browser launched successfully');
-      console.log('📄 Opening Discord Quests page...');
-      const page = await localBrowser.newPage();
-      
-      // Mask the browser as a normal Chrome browser
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-      
-      // Stealth mode - remove webdriver property
-      await page.evaluateOnNewDocument(() => {
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => false,
-        });
-      });
-      
-      // Add a timeout handler
-      page.on('error', (error) => {
-        console.error('❌ Page error:', error);
-      });
-
-      // Set token in authorization header AND local storage
-      const sanitizedToken = currentToken.trim();
-      await page.setExtraHTTPHeaders({
-        'Authorization': sanitizedToken
-      });
-
-      // Also set token in local storage for good measure
-      await page.evaluateOnNewDocument((token) => {
-        localStorage.setItem('token', `"${token}"`);
-      }, sanitizedToken);
-
-      // Navigate to quest page with better error handling
-      console.log(`🌐 Navigating to ${QUEST_PAGE_URL}...`);
-      try {
-        const response = await page.goto(QUEST_PAGE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-        console.log(`📥 Page response status: ${response?.status()}`);
-        if (!response || !response.ok()) {
-          console.log(`⚠️  Warning: Page returned status ${response?.status()}`);
-        }
-      } catch (error) {
-        console.error('❌ Navigation error details:', error.message);
-        console.log('⚠️  Discord Quests page load timeout, continuing anyway...');
-      }
-
-      // Wait for quests to load - try to wait for specific elements
-      try {
-        await page.waitForSelector('[id^="quest-tile-"]', { timeout: 5000 });
-      } catch (error) {
-        console.log('⚠️  Quest tiles did not load within timeout');
-      }
-
-      // Get page HTML
-      const html = await page.content();
-      await page.close();
-
-      // Debug: Check if we're on login page
-      if (html.includes('login') || html.includes('signin') || html.includes('You are being redirected')) {
-        console.error('❌ ERROR: Page appears to be a login page - authentication failed!');
-        console.error(`   Token from: ${accountInfo.email} is invalid or expired`);
-        
-        // Save invalid account
-        if (allAccounts.length > 0) {
-          saveInvalidAccount(allAccounts[currentAccountIndex]);
-        }
-        
-        if (allAccounts.length > 1) {
-          nextAccount();
-          const nextEmail = allAccounts[currentAccountIndex].email;
-          console.log(`🔄 Switching to next account: ${nextEmail}`);
-          await sendErrorAlert(
-            'Account Token Invalid - Rotating',
-            `Token from account **${accountInfo.email}** is invalid or expired.\n\n**Action:** Automatically switched to next account: **${nextEmail}**\n\nInvalid account saved to \`used_tokens.txt\`\n\nIf all accounts fail, will use USER_TOKEN from .env`,
-            'warning'
-          );
-          
-          // RETRY immediately with next account
-          console.log(`🔄 Retrying scan with next account...`);
-          await localBrowser.close();
-          return await fetchQuests(retryCount + 1, maxRetries);
-        } else if (!accountInfo.isFallback) {
-          // All accounts.txt are exhausted, will use .env fallback
-          nextAccount(); // This will cycle back to 0 and use USER_TOKEN fallback
-          await sendErrorAlert(
-            'All accounts.txt Tokens Exhausted - Using .env Fallback',
-            `Token from account **${accountInfo.email}** is invalid or expired.\n\n**All accounts from accounts.txt have failed.** Now using USER_TOKEN from .env as fallback.\n\nPlease refresh tokens in accounts.txt or .env`,
-            'critical'
-          );
-          
-          // RETRY immediately with fallback token
-          console.log(`🔄 Retrying scan with USER_TOKEN fallback...`);
-          await localBrowser.close();
-          return await fetchQuests(retryCount + 1, maxRetries);
-        } else {
-          // Even .env fallback failed
-          await sendErrorAlert(
-            'Critical: All Tokens Failed - Including .env Fallback',
-            `USER_TOKEN from .env is also invalid or expired!\n\n**URGENT:** Need valid Discord token immediately.\n\n1. Get new token from https://discord.com\n2. Add to accounts.txt or update USER_TOKEN in .env\n3. Scraper cannot continue without valid token`,
-            'critical'
-          );
-        }
-        console.log('📋 To fix this:');
-
-        console.log('   1. Go to https://discord.com');
-        console.log('   2. Open Developer Tools (F12) → Application → Local Storage');
-        console.log('   3. Find the "token" key');
-        console.log('   4. Copy the full token value (without quotes)');
-        console.log('   5. Update USER_TOKEN in .env');
-
-        // Still save the HTML for debugging
-        const debugFile = path.join(__dirname, 'quests_debug.html');
-        fs.writeFileSync(debugFile, html, 'utf-8');
-        console.log(`📝 HTML saved to ${debugFile} for debugging`);
-        return;
-      }
-
-      // Save HTML for debugging
-      const debugFile = path.join(__dirname, 'quests_debug.html');
-      fs.writeFileSync(debugFile, html, 'utf-8');
-      console.log(`📝 HTML saved to ${debugFile} for debugging`);
-
-      // Parse active quests from HTML
-      const activeQuests = extractQuestsFromHTML(html);
-
-      if (!activeQuests || activeQuests.length === 0) {
-        console.log('⚠️  No active quests found on page');
-        return;
-      }
-
-      console.log(`📊 Found ${activeQuests.length} active quest(s)`);
-
-      // Send ALL active quests to the bot (for proper expired quest detection)
-      // But only notify about quests we haven't notified about before
-      const questsToSend = activeQuests.map(quest => ({
-        id: quest.id,
-        name: quest.name,
-        reward: quest.reward,  // Already extracted correctly (200 Orbs, 2400 Orbs, Decoration, etc.)
-        type: quest.type,
-        buttonLabel: quest.buttonLabel,
-        expiresAt: quest.expiresAt,
-        detectedAt: new Date().toLocaleString(),
-        isNew: !notifiedQuestIds.has(quest.id) // Mark which quests are new
-      }));
-
-      // Track all active quest IDs as notified
-      for (const quest of activeQuests) {
-        notifiedQuestIds.add(quest.id);
-      }
-      saveNotifiedQuestIds(notifiedQuestIds);
-
-      const newQuestsCount = questsToSend.filter(q => q.isNew).length;
-      
-      if (newQuestsCount > 0) {
-        console.log(`\n✨ Detected ${newQuestsCount} new quest(s)!`);
-        for (const q of questsToSend.filter(q => q.isNew)) {
-          console.log(`  📌 ${q.name}`);
-          console.log(`     Reward: ${q.reward}`);
-          console.log(`     Type: ${q.type} (${q.buttonLabel})`);
-          console.log(`     Expires: ${q.expiresAt}`);
-        }
-        console.log('');
-      } else {
-        console.log(`✓ No new quests (${activeQuests.length} active)`);
-      }
-
-      if (questsToSend.length > 0) {
-        await sendQuestsToBot(questsToSend);
-      }
-
-    } catch (error) {
-      console.error('❌ Error in fetchQuests:', error.message);
-      console.error('🔍 Full error details:', error.toString());
-      if (error.stack) {
-        console.error('📍 Stack trace:', error.stack);
-      }
-      
-      // Send critical error alerts
-      if (error.message.includes('timeout') || error.message.includes('ECONNREFUSED')) {
-        await sendErrorAlert(
-          'Scraper Connection Error',
-          `Failed to connect to Discord:\n\`${error.message}\``,
-          'warning'
-        );
-      } else if (error.message.includes('puppeteer') || error.message.includes('browser')) {
-        await sendErrorAlert(
-          'Scraper Browser Error',
-          `Browser/Puppeteer error:\n\`${error.message}\``,
-          'critical'
-        );
-      }
-    } finally {
-      // Always close browser after scan
-      if (localBrowser) {
-        await localBrowser.close();
-        console.log('✅ Browser closed - account set to invisible');
-        console.log(`✅ Scan completed successfully with account #${currentAccountIndex + 1}`);
-      }
-    }
-
-  } catch (error) {
-    console.error('❌ Error fetching quests:', error.message);
-  }
+  return active;
 }
 
 async function sendQuestsToBot(quests) {
+  if (!NOTIFICATION_CHANNEL_ID) {
+    console.warn('⚠️  NOTIFICATION_CHANNEL_ID not set');
+    return;
+  }
   try {
-    if (!NOTIFICATION_CHANNEL_ID) {
-      console.warn('⚠️  NOTIFICATION_CHANNEL_ID not set');
+    await axios.post(WEBHOOK_URL, {
+      quests,
+      channelId: NOTIFICATION_CHANNEL_ID,
+      timestamp: new Date()
+    }, { timeout: 5000 });
+    console.log('✅ Quests sent to bot successfully');
+  } catch (e) {
+    console.error('❌ Failed to send quests to bot:', e.message);
+  }
+}
+
+async function fetchQuests() {
+  console.log('🔍 Fetching quests from JSON feed...');
+  try {
+    const response = await axios.get(QUESTS_JSON_URL, { timeout: 15000 });
+    const allQuests = response.data;
+
+    if (!Array.isArray(allQuests)) {
+      throw new Error('Unexpected response format - expected JSON array');
+    }
+
+    console.log(`📦 Loaded ${allQuests.length} total quests from feed`);
+
+    const activeQuests = parseActiveQuests(allQuests);
+    console.log(`📊 ${activeQuests.length} currently active quest(s)`);
+
+    if (activeQuests.length === 0) {
+      console.log('⚠️  No active quests found');
       return;
     }
 
-    console.log(`📤 Sending ${quests.length} quest(s) to bot webhook...`);
+    const newCount = activeQuests.filter(q => q.isNew).length;
+    if (newCount > 0) {
+      console.log(`\n✨ ${newCount} new quest(s) detected!`);
+      for (const q of activeQuests.filter(q => q.isNew)) {
+        console.log(`  📌 ${q.name} (${q.game})`);
+        console.log(`     Reward: ${q.reward}`);
+        console.log(`     Tasks:  ${q.tasks.join(' / ') || 'Unknown'}`);
+        console.log(`     Expires: ${new Date(q.expiresAt).toLocaleDateString()}`);
+      }
+    } else {
+      console.log(`✓ No new quests (${activeQuests.length} active)`);
+    }
 
-    const response = await axios.post(WEBHOOK_URL, {
-      quests: quests,
-      channelId: NOTIFICATION_CHANNEL_ID,
-      timestamp: new Date()
-    }, {
-      timeout: 5000
-    });
+    for (const q of activeQuests) notifiedQuestIds.add(q.id);
+    saveNotifiedQuestIds(notifiedQuestIds);
 
-    console.log('✅ Quests sent to bot successfully');
-    
-    // Save the scan time after successful fetch
+    await sendQuestsToBot(activeQuests);
     saveLastScanTime();
-    
-    return response.data;
 
   } catch (error) {
-    console.error('❌ Failed to send quests to bot:', error.message);
+    console.error('❌ Error fetching quests:', error.message);
+    await sendErrorAlert('Quest Fetch Error', `Failed to fetch quest data:\n\`${error.message}\``, 'warning');
   }
 }
 
 async function start() {
-  console.log('🚀 Discord Quest Scraper Started');
-  logAccountSetup();
-  console.log(`🔗 Webhook URL: ${WEBHOOK_URL}`);
-  console.log(`⏱️  Scanning every ${SCAN_INTERVAL}ms`);
+  console.log('🚀 Discord Quest Scraper Started (JSON feed mode)');
+  console.log(`🔗 Feed URL: ${QUESTS_JSON_URL}`);
+  console.log(`🔗 Bot webhook: ${WEBHOOK_URL}`);
+  console.log(`⏱️  Scanning every ${SCAN_INTERVAL / 1000}s`);
   console.log('---');
 
-  // Check if enough time has passed since last scan
   const lastScanTime = loadLastScanTime();
   const timeSinceLastScan = Date.now() - lastScanTime;
-  
+
   if (lastScanTime === 0) {
     console.log('📌 First startup - performing initial scan...');
     await fetchQuests();
   } else if (timeSinceLastScan >= SCAN_INTERVAL) {
-    console.log(`⏳ ${Math.round(timeSinceLastScan / 1000)}s since last scan (>${Math.round(SCAN_INTERVAL / 1000)}s) - performing scan...`);
+    console.log(`⏳ ${Math.round(timeSinceLastScan / 1000)}s since last scan - performing scan...`);
     await fetchQuests();
   } else {
     const waitTime = Math.round((SCAN_INTERVAL - timeSinceLastScan) / 1000);
-    console.log(`⏳ Last scan was ${Math.round(timeSinceLastScan / 1000)}s ago - waiting ${waitTime}s before next scan`);
+    console.log(`⏳ Last scan was ${Math.round(timeSinceLastScan / 1000)}s ago - waiting ${waitTime}s`);
   }
 
-  // Periodic scanning
   setInterval(fetchQuests, SCAN_INTERVAL);
 }
 
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down...');
   process.exit(0);
 });
 
-if (!USER_TOKEN) {
-  console.error('❌ USER_TOKEN not found in .env file!');
-  process.exit(1);
-}
-
 start();
-
