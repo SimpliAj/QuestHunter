@@ -107,6 +107,11 @@ function loadData() {
   }
 }
 
+// Load data at startup immediately — must run before Express accepts webhook calls
+// (questScraper can POST before the Discord bot's 'ready' event fires, which would
+// cause saveData() to overwrite expired_quests.json with an empty Map)
+loadData();
+
 // Save persistent data
 function saveData() {
   try {
@@ -349,12 +354,9 @@ client.on('guildCreate', async (guild) => {
 });
 
 client.once('ready', () => {
-  // Load persistent data when bot is ready
-  loadData();
-  
   console.log(`✅ Bot logged in as ${client.user.tag}`);
   console.log(`🔄 Starting quest scanner with ${SCAN_INTERVAL}ms interval`);
-  
+
   // Set bot status to watching quests
   client.user.setPresence({
     activities: [
@@ -365,13 +367,10 @@ client.once('ready', () => {
     ],
     status: 'online'
   });
-  
-  // Load persistent data
-  loadData();
-  
+
   // Register slash commands
   registerSlashCommands();
-  
+
   // Start scanning for quests
   startQuestScanner();
 });
@@ -480,6 +479,10 @@ async function registerSlashCommands() {
       description: 'Show bot statistics',
     },
     {
+      name: 'info',
+      description: 'Information about how quests work and why you might not see a quest',
+    },
+    {
       name: 'announce',
       description: 'Broadcast an announcement to all configured guild channels (Admin only)',
       options: [
@@ -550,7 +553,7 @@ async function registerSlashCommands() {
         {
           name: 'filter',
           description: 'Filter which quests to receive DM notifications for',
-          type: 3, // STRING type
+          type: 3,
           required: true,
           choices: [
             { name: 'All Quests', value: 'all' },
@@ -558,6 +561,16 @@ async function registerSlashCommands() {
             { name: 'Decorations Only', value: 'decorations' },
             { name: 'Game Items Only', value: 'items' },
             { name: 'Disabled', value: 'disabled' },
+          ],
+        },
+        {
+          name: 'style',
+          description: 'How the DM notification looks (default: Default)',
+          type: 3,
+          required: false,
+          choices: [
+            { name: 'Default (text message)', value: 'default' },
+            { name: 'Embed (rich card with reward image)', value: 'embed' },
           ],
         },
       ],
@@ -1014,12 +1027,22 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         });
       }
 
+
       // Get filter option
       const filterOption = interaction.options.getString('filter') || 'all';
       
-      // Filter quests based on option
-      let quests = Array.from(knownQuests.values());
-      
+      // Deduplicate regional variants by normalized name, collecting all IDs
+      const nameToQuest = new Map();
+      for (const q of knownQuests.values()) {
+        const key = (q.name || '').replace(/\s+Quest$/i, '').trim();
+        if (!nameToQuest.has(key)) {
+          nameToQuest.set(key, { ...q, allIds: [q.id] });
+        } else {
+          nameToQuest.get(key).allIds.push(q.id);
+        }
+      }
+      let quests = Array.from(nameToQuest.values());
+
       if (filterOption !== 'all') {
         quests = quests.filter(quest => {
           const rewardLower = quest.reward?.toLowerCase() || '';
@@ -1087,14 +1110,17 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         
         const questFields = pageQuests.map((q, i) => {
           const globalIdx = startIdx + i + 1;
-          const questLink = `https://discord.com/quests/${q.id}`;
+          const ids = q.allIds?.length > 0 ? q.allIds : [q.id];
+          const linkStr = ids.length === 1
+            ? `[Quest öffnen](https://discord.com/quests/${ids[0]})`
+            : ids.map((id, idx) => `[Quest Link ${idx + 1}](https://discord.com/quests/${id})`).join(' • ');
           const taskStr = q.tasks?.length > 0 ? `\nTask(s): ${q.tasks.join(' / ')}` : '';
           const relExpiry = formatRelative(q.expiresAt);
           const absExpiry = formatDate(q.expiresAt) || 'Unknown';
           const expiryStr = relExpiry ? `${absExpiry} (${relExpiry})` : absExpiry;
           return {
             name: `${globalIdx}. ${q.name}`,
-            value: `[Quest öffnen](${questLink})\nReward: ${q.reward}${taskStr}\nExpires: ${expiryStr}`,
+            value: `${linkStr}\nReward: ${q.reward}${taskStr}\nExpires: ${expiryStr}`,
             inline: false
           };
         });
@@ -1376,16 +1402,32 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
     if (interaction.commandName === 'stats') {
       const totalServers = client.guilds.cache.size;
       const totalChannels = Array.from(guildSettings.values()).reduce((sum, settings) => sum + (settings.channels?.length || 0), 0);
-      const totalTrackedQuests = knownQuests.size + expiredQuests.size; // All quests ever
-      const activeQuests = knownQuests.size; // Only active quests
-      
+
+      // Deduplicate by normalized name only (reward strings may differ between old/new format)
+      const normName = (q) => (q.name || '').replace(/\s+Quest$/i, '').trim();
+      const dedupeByName = (quests) => {
+        const seen = new Set();
+        return quests.filter(q => {
+          const key = normName(q);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+      const uniqueActive = dedupeByName(Array.from(knownQuests.values()));
+      const activeNames = new Set(uniqueActive.map(normName));
+      const uniqueExpired = dedupeByName(Array.from(expiredQuests.values()).filter(q => !activeNames.has(normName(q))));
+
+      const totalTrackedQuests = uniqueActive.length + uniqueExpired.length;
+      const activeQuests = uniqueActive.length;
+
       // Calculate available orbs, decorations, and game items from ACTIVE quests only
       let availableOrbs = 0;
       let availableDecorations = 0;
       let availableGameItems = 0;
       const gameItemsMap = new Map(); // Track unique game items
-      
-      for (const quest of knownQuests.values()) {
+
+      for (const quest of uniqueActive) {
         const rewardLower = quest.reward?.toLowerCase() || '';
         if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
           availableDecorations++;
@@ -1407,30 +1449,12 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       let totalTrackedGameItems = 0;
       const totalGameItemsMap = new Map();
       
-      // Count from active quests
-      for (const quest of knownQuests.values()) {
+      // Count from deduplicated active + expired quests
+      for (const quest of [...uniqueActive, ...uniqueExpired]) {
         const rewardLower = quest.reward?.toLowerCase() || '';
         if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
           totalTrackedDecorations++;
         } else if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
-          // Extract orb amount from reward string like "700 Discord Orbs" or "200 Discord Orbs"
-          const orbMatch = quest.reward?.match(/(\d+)/);
-          if (orbMatch) {
-            totalTrackedOrbs += parseInt(orbMatch[1]);
-          }
-        } else if (quest.reward && !rewardLower.includes('orb')) {
-          totalGameItemsMap.set(quest.reward, (totalGameItemsMap.get(quest.reward) || 0) + 1);
-          totalTrackedGameItems++;
-        }
-      }
-      
-      // Also count from expired quests
-      for (const [, quest] of expiredQuests) {
-        const rewardLower = quest.reward?.toLowerCase() || '';
-        if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
-          totalTrackedDecorations++;
-        } else if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
-          // Extract orb amount from reward string like "700 Discord Orbs" or "200 Discord Orbs"
           const orbMatch = quest.reward?.match(/(\d+)/);
           if (orbMatch) {
             totalTrackedOrbs += parseInt(orbMatch[1]);
@@ -1513,6 +1537,43 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         embeds: [statsEmbed],
         ephemeral: true,
       });
+    }
+
+    if (interaction.commandName === 'info') {
+      const infoEmbed = {
+        color: 0x5865F2,
+        title: '❓ How Quests Work',
+        description: 'QuestHunter detects **all** Discord quests globally — but not every quest is available to everyone.',
+        fields: [
+          {
+            name: '🌍 Region Locked',
+            value: 'Many quests are only available in specific countries or regions. If a quest was announced here but you see **"You are not eligible for this quest"** when opening the link — it is region locked and not available in your region.',
+            inline: false,
+          },
+          {
+            name: '📱 Platform Restrictions',
+            value: 'Some quests require a specific platform (Mobile, Desktop, PlayStation, Xbox, Switch). Make sure you are using the correct platform for the task.',
+            inline: false,
+          },
+          {
+            name: '🔔 Why do I see quests I can\'t do?',
+            value: 'This bot notifies about every active quest so that users **in eligible regions** get notified. Quests that show up for you may be completable by other members of this server.',
+            inline: false,
+          },
+          {
+            name: '🔍 Where to see your quests',
+            value: 'Open Discord → click the gift icon at the top of your DM list → **Quests** tab. Only quests available in your region will appear there.',
+            inline: false,
+          },
+        ],
+        footer: {
+          text: 'QuestHunter',
+          icon_url: 'https://i.imgur.com/yTgBkjM.png',
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      await interaction.reply({ embeds: [infoEmbed], ephemeral: true });
     }
 
     if (interaction.commandName === 'announce') {
@@ -1865,22 +1926,25 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
     if (interaction.commandName === 'dm-notifications') {
       const userId = interaction.user.id;
       const filterOption = interaction.options.getString('filter');
-      
-      const userPrefs = userPreferences.get(userId) || { dmNotifications: false, dmFilter: 'all' };
-      
-      // Update preferences
+      const styleOption = interaction.options.getString('style');
+
+      const userPrefs = userPreferences.get(userId) || { dmNotifications: false, dmFilter: 'all', dmStyle: 'default' };
+
       if (filterOption === 'disabled') {
         userPrefs.dmNotifications = false;
-        userPrefs.dmFilter = 'all'; // Reset filter when disabled
+        userPrefs.dmFilter = 'all';
       } else {
         userPrefs.dmNotifications = true;
         userPrefs.dmFilter = filterOption;
       }
-      
+
+      if (styleOption) {
+        userPrefs.dmStyle = styleOption;
+      }
+
       userPreferences.set(userId, userPrefs);
       saveData();
-      
-      // Get filter text
+
       const filterText = {
         'all': 'All Quests',
         'orbs': 'Orbs Only',
@@ -1888,32 +1952,26 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         'items': 'Game Items Only',
         'disabled': 'Disabled'
       }[filterOption];
-      
-      const embed = {
-        color: 0x5865F2,
-        title: '💬 DM Notifications',
-        description: `Direct message notifications for new quests have been configured.`,
-        fields: [
-          {
-            name: 'Status',
-            value: filterOption === 'disabled' ? '❌ **DISABLED**' : '✅ **ENABLED**',
-            inline: false
-          },
-          {
-            name: 'Filter',
-            value: filterText,
-            inline: false
-          }
-        ],
-        footer: {
-          text: 'QuestHunter',
-          icon_url: 'https://i.imgur.com/yTgBkjM.png'
-        },
-        timestamp: new Date().toISOString()
-      };
+
+      const styleText = (userPrefs.dmStyle === 'embed') ? 'Embed (rich card)' : 'Default (text message)';
+
+      const fields = [
+        { name: 'Status', value: filterOption === 'disabled' ? '❌ **DISABLED**' : '✅ **ENABLED**', inline: false },
+        { name: 'Filter', value: filterText, inline: true },
+      ];
+      if (filterOption !== 'disabled') {
+        fields.push({ name: 'Style', value: styleText, inline: true });
+      }
 
       await interaction.reply({
-        embeds: [embed],
+        embeds: [{
+          color: 0x5865F2,
+          title: '💬 DM Notifications',
+          description: 'Direct message notifications for new quests have been configured.',
+          fields,
+          footer: { text: 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString()
+        }],
         ephemeral: true,
       });
     }
@@ -1970,6 +2028,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           PLAY_ON_DESKTOP: 'Desktop', STREAM_ON_DESKTOP: 'Desktop (Stream)',
           PLAY_ON_MOBILE: 'Mobile', PLAY_ON_PLAYSTATION: 'PlayStation', PLAY_ON_XBOX: 'Xbox',
           PLAY_ON_SWITCH: 'Switch', COMPLETE_ACHIEVEMENT: 'Achievement', PLAY_ACTIVITY: 'Activity',
+          ACHIEVEMENT_IN_ACTIVITY: 'Achievement (Activity)',
         };
         const cdnUrl = (questId, assetPath) => {
           if (!assetPath) return null;
@@ -1989,34 +2048,54 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             return start <= now && expire > now && expire <= maxExpiry;
           })
           .sort((a, b) => new Date(b.config.starts_at) - new Date(a.config.starts_at))
-          .map(e => {
+          .reduce((acc, e) => {
             const cfg = e.config;
+            const questName = cfg.messages?.quest_name || 'Unknown';
+
+            // Skip [TEST] quests
+            if (/^\[TEST\]/i.test(questName)) return acc;
+
             const rewards = cfg.rewards_config?.rewards || cfg.rewards || [];
             const r = rewards[0];
             let reward = 'Unknown';
             if (r?.orb_quantity != null) {
-              reward = `${r.orb_quantity} Discord Orbs${r.premium_orb_quantity != null ? ` (Nitro: ${r.premium_orb_quantity} Orbs)` : ''}`;
+              const nitro = r.premium_orb_quantity ?? Math.round(r.orb_quantity * 1.2);
+              reward = `${r.orb_quantity} Discord Orbs (Nitro: ${nitro} Orbs)`;
             } else {
-              reward = r?.messages?.name || r?.name || 'Unknown';
+              const name = r?.messages?.name || r?.name || 'Unknown';
+              const redemption = r?.messages?.redemption_instructions_by_platform?.['0'] || '';
+              const isDecoration = /^(PLACEHOLDER|Default)$/i.test(redemption.trim());
+              reward = isDecoration ? `${name} (Avatar Decoration)` : name;
             }
+
             const taskKeys = Object.keys(cfg.task_config_v2?.tasks || cfg.task_config?.tasks || {});
             const hasSpecificVideo = taskKeys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
             const tasks = taskKeys
               .filter(k => !(k === 'WATCH_VIDEO' && hasSpecificVideo))
               .map(k => TASK_LABELS[k] || k);
 
-            // Reward asset if present (mp4/webm included), otherwise Orbs GIF
-            const imageUrl = r?.asset ? cdnUrl(e.id, r.asset) : 'https://cdn3.emoji.gg/emojis/44565-orbs-animated.gif';
+            const imageUrl = r?.asset ? cdnUrl(e.id, r.asset) : 'https://i.imgur.com/v2Ra1GP.png';
 
-            return {
+            // Deduplicate regional variants by name+reward
+            const normalizedName = questName.replace(/\s+Quest$/i, '').trim();
+            const dedupeKey = `${normalizedName}||${reward}`;
+            const existing = acc.find(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim()}||${q.reward}` === dedupeKey);
+            if (existing) {
+              if (!existing.allIds.includes(String(e.id))) existing.allIds.push(String(e.id));
+              return acc;
+            }
+
+            acc.push({
               id: e.id,
-              name: cfg.messages?.quest_name || 'Unknown',
+              allIds: [String(e.id)],
+              name: questName,
               game: cfg.messages?.game_title || cfg.application?.name || null,
               reward, tasks, imageUrl,
               startsAt: cfg.starts_at,
               expiresAt: cfg.expires_at,
-            };
-          });
+            });
+            return acc;
+          }, []);
       } catch (err) {
         // Fall back to knownQuests if fetch fails
         console.warn('⚠️  quest-test: JSON fetch failed, using knownQuests:', err.message);
@@ -2139,12 +2218,28 @@ function buildQuestPayload(questData, style, pingContent = '') {
     };
     if (questData.imageUrl) embed.thumbnail = { url: questData.imageUrl };
 
-    return { content: pingContent || undefined, embeds: [embed] };
+    // Add regional link buttons if quest has multiple IDs
+    const allIds = questData.allIds?.length > 1 ? questData.allIds : null;
+    let components = undefined;
+    if (allIds) {
+      const buttons = allIds.slice(0, 5).map((id, i) => ({
+        type: 2, // Button
+        style: 5, // Link
+        label: `Quest Link ${i + 1}`,
+        url: `https://discord.com/quests/${id}`,
+      }));
+      components = [{ type: 1, components: buttons }]; // ActionRow
+    }
+
+    return { content: pingContent || undefined, embeds: [embed], components };
   }
 
   // Default style
   let content = `🎯 **New Quest Detected!**\n${pingContent}`;
   const infoLines = [];
+  if (questData.reward) {
+    infoLines.push(`**Reward:** ${questData.reward}`);
+  }
   if (questData.tasks?.length > 0) {
     infoLines.push(`**Task(s):** ${questData.tasks.join(' / ')}`);
   }
@@ -2152,7 +2247,15 @@ function buildQuestPayload(questData, style, pingContent = '') {
     infoLines.push(`**Expires:** ${expiryText}`);
   }
   if (infoLines.length > 0) content += infoLines.join(' | ') + '\n';
-  return { content: content + questLink };
+
+  // All regional URLs — one per line
+  const allIds = questData.allIds?.length > 1 ? questData.allIds : null;
+  if (allIds) {
+    content += allIds.map(id => `https://discord.com/quests/${id}`).join('\n');
+  } else {
+    content += questLink;
+  }
+  return { content };
 }
 
 async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all') {
@@ -2269,12 +2372,10 @@ async function sendDMNotifications(questData) {
     for (const userId of usersToNotify) {
       try {
         const user = await client.users.fetch(userId);
-        const questLink = `https://discord.com/quests/${questData.id}`;
-        const taskLine = questData.tasks?.length > 0 ? `\nTask(s): ${questData.tasks.join(' / ')}` : '';
-        const expiryLine = questData.expiresAt ? `\nExpires: ${formatDate(questData.expiresAt)}` : '';
-        const dmMessage = `🎯 **New Quest Detected!**\n\n**${questData.name}**\nReward: ${questData.reward}${taskLine}${expiryLine}\n\n${questLink}`;
-        
-        await user.send(dmMessage);
+        const prefs = userPreferences.get(userId) || {};
+        const dmStyle = prefs.dmStyle || 'default';
+        const payload = buildQuestPayload(questData, dmStyle);
+        await user.send(payload);
         sentCount++;
       } catch (error) {
         console.log(`  ⚠️  Could not send DM to user ${userId}: ${error.message}`);
@@ -2810,13 +2911,30 @@ app.post('/webhook/quests', async (req, res) => {
     let newQuestCount = 0;
     for (const quest of quests) {
       // Check if this is a truly new quest (not previously notified)
-      // IMPORTANT: Check both knownQuests AND expiredQuests to avoid resending expired quests
-      const isNew = !knownQuests.has(quest.id) && !expiredQuests.has(quest.id);
+      // Check by ID first, then by name+reward to catch regional duplicate IDs for the same quest
+      const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim()}||${quest.reward || ''}`;
+      const isDuplicateByName = [...knownQuests.values(), ...expiredQuests.values()]
+        .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim()}||${q.reward || ''}` === normalizedKey);
+      const isNew = !knownQuests.has(quest.id) && !expiredQuests.has(quest.id) && !isDuplicateByName;
       
       if (isNew) {
         newQuestCount++;
         console.log(`  🆕 NEW: ${quest.name} (${quest.reward}, Expires: ${quest.expiresAt})`);
-        
+
+        // Mark as known IMMEDIATELY to prevent double-sends from concurrent webhook calls
+        knownQuests.set(quest.id, {
+          id: quest.id,
+          name: quest.name,
+          game: quest.game || null,
+          reward: quest.reward,
+          tasks: quest.tasks || [],
+          imageUrl: quest.imageUrl || null,
+          type: quest.type,
+          startsAt: quest.startsAt || null,
+          expiresAt: quest.expiresAt,
+          detectedAt: quest.detectedAt || new Date().toLocaleString(),
+        });
+
         // Only send notifications if bot is fully ready
         if (botReady) {
           try {
@@ -2878,7 +2996,7 @@ app.post('/webhook/quests', async (req, res) => {
             console.log(`  🖼️  Updated imageUrl for ${quest.name}`);
             existingQuest.imageUrl = quest.imageUrl;
           }
-          if (quest.tasks?.length > 0 && (!existingQuest.tasks || existingQuest.tasks.length === 0)) {
+          if (quest.tasks?.length > 0) {
             existingQuest.tasks = quest.tasks;
           }
           if (quest.game && !existingQuest.game) {
@@ -2887,21 +3005,6 @@ app.post('/webhook/quests', async (req, res) => {
         }
       }
       
-      // Add new quest to knownQuests
-      if (isNew) {
-        knownQuests.set(quest.id, {
-          id: quest.id,
-          name: quest.name,
-          game: quest.game || null,
-          reward: quest.reward,
-          tasks: quest.tasks || [],
-          imageUrl: quest.imageUrl || null,
-          type: quest.type,
-          startsAt: quest.startsAt || null,
-          expiresAt: quest.expiresAt,
-          detectedAt: quest.detectedAt || new Date().toLocaleString(),
-        });
-      }
     }
     
     // Save data after processing

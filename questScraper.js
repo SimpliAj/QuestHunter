@@ -26,6 +26,7 @@ const TASK_LABELS = {
   PLAY_ON_SWITCH: 'Switch',
   COMPLETE_ACHIEVEMENT: 'Achievement',
   PLAY_ACTIVITY: 'Activity',
+  ACHIEVEMENT_IN_ACTIVITY: 'Achievement (Activity)',
 };
 
 async function sendErrorAlert(title, description, severity = 'warning') {
@@ -97,16 +98,19 @@ function parseReward(config) {
 
   // Discord Orbs
   if (reward.orb_quantity != null) {
-    let text = `${reward.orb_quantity} Discord Orbs`;
-    if (reward.premium_orb_quantity != null) {
-      text += ` (Nitro: ${reward.premium_orb_quantity} Orbs)`;
-    }
-    return text;
+    const base = reward.orb_quantity;
+    // Use API value if set, otherwise calculate Nitro 1.2x multiplier
+    const nitro = reward.premium_orb_quantity ?? Math.round(base * 1.2);
+    return `${base} Discord Orbs (Nitro: ${nitro} Orbs)`;
   }
 
-  // Named reward (game item or decoration)
+  // Named reward — detect if it's a Discord Avatar Decoration vs a game item
   const name = reward.messages?.name || reward.name;
-  if (name) return name;
+  if (name) {
+    const redemption = reward.messages?.redemption_instructions_by_platform?.['0'] || '';
+    const isDecoration = /^(PLACEHOLDER|Default)$/i.test(redemption.trim());
+    return isDecoration ? `${name} (Avatar Decoration)` : name;
+  }
 
   return null;
 }
@@ -129,8 +133,8 @@ function buildCdnUrl(questId, assetPath) {
   return `https://cdn.discordapp.com/quests/${questId}/${assetPath}`;
 }
 
-const ORBS_GIF = 'https://cdn3.emoji.gg/emojis/44565-orbs-animated.gif';
-
+const ORBS_GIF = 'https://i.imgur.com/v2Ra1GP.png';
+//const ORBS_GIF = 'https://cdn3.emoji.gg/emojis/44565-orbs-animated.gif';
 
 function getImageUrl(questId, config) {
   const rewards = config.rewards_config?.rewards || config.rewards || [];
@@ -148,6 +152,7 @@ function parseActiveQuests(allQuests) {
     new Date(b.config?.starts_at || 0) - new Date(a.config?.starts_at || 0)
   );
   const active = [];
+  const seenKeys = new Map(); // name+reward → index in active array
 
   for (const entry of sorted) {
     const config = entry.config;
@@ -159,9 +164,27 @@ function parseActiveQuests(allQuests) {
     const maxExpiry = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000);
     if (startsAt > now || expiresAt <= now || expiresAt > maxExpiry) continue;
 
+    const questName = config.messages?.quest_name || '';
+    if (/^\[TEST\]/i.test(questName)) {
+      console.log(`  ⏭️  Skipping test quest: ${questName}`);
+      continue;
+    }
+
     const reward = parseReward(config);
     if (!reward) {
       console.warn(`  ⚠️  Quest ${entry.id} has no parseable reward, skipping`);
+      continue;
+    }
+
+    // Deduplicate regional variants — collect all IDs for the same quest
+    const normalizedName = questName.replace(/\s+Quest$/i, '').trim();
+    const dedupeKey = `${normalizedName}||${reward}`;
+    if (seenKeys.has(dedupeKey)) {
+      const existing = active[seenKeys.get(dedupeKey)];
+      if (!existing.allIds.includes(String(entry.id))) {
+        existing.allIds.push(String(entry.id));
+        console.log(`  🔗 Added regional variant ID ${entry.id} to "${questName}"`);
+      }
       continue;
     }
 
@@ -170,8 +193,10 @@ function parseActiveQuests(allQuests) {
     const game = config.messages?.game_title || config.application?.name || 'Unknown';
     const imageUrl = getImageUrl(entry.id, config);
 
+    seenKeys.set(dedupeKey, active.length);
     active.push({
       id: entry.id,
+      allIds: [String(entry.id)],
       name,
       game,
       reward,
