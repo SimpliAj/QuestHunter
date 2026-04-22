@@ -2377,6 +2377,24 @@ async function sendDMNotifications(questData) {
         const payload = buildQuestPayload(questData, dmStyle);
         await user.send(payload);
         sentCount++;
+
+        // Vote prompt every random 5-10 DMs
+        const dmCount = (prefs.dmCount || 0) + 1;
+        const nextVoteAt = prefs.nextVoteAt ?? (Math.floor(Math.random() * 6) + 5);
+        if (dmCount >= nextVoteAt) {
+          try {
+            if (dmStyle === 'embed') {
+              await user.send({ embeds: [{ color: 0x5865F2, description: '⭐ Enjoying QuestFinder? Help us grow!\n[🗳️ Vote on Top.gg](https://top.gg/bot/1474123878002462801/vote)' }] });
+            } else {
+              await user.send(`⭐ Enjoying QuestFinder? Vote for us: <https://top.gg/bot/1474123878002462801/vote>`);
+            }
+          } catch (_) {}
+          prefs.dmCount = 0;
+          prefs.nextVoteAt = Math.floor(Math.random() * 6) + 5;
+        } else {
+          prefs.dmCount = dmCount;
+        }
+        userPreferences.set(userId, prefs);
       } catch (error) {
         console.log(`  ⚠️  Could not send DM to user ${userId}: ${error.message}`);
       }
@@ -2384,6 +2402,7 @@ async function sendDMNotifications(questData) {
 
     if (sentCount > 0) {
       console.log(`  ✅ Sent DM to ${sentCount} user(s)`);
+      saveData();
     }
   } catch (error) {
     console.error(`  ❌ Error sending DM notifications:`, error.message);
