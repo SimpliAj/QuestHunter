@@ -3004,6 +3004,37 @@ app.post('/webhook/quests', async (req, res) => {
         }
       } else {
         console.log(`  ℹ️  EXISTING: ${quest.name}`);
+
+        // Re-activate quest if scraper says it's active but it ended up in expiredQuests
+        if (!knownQuests.has(quest.id)) {
+          let expiredId = null;
+          if (expiredQuests.has(quest.id)) {
+            expiredId = quest.id;
+          } else {
+            for (const [k, v] of expiredQuests) {
+              const vKey = `${(v.name || '').replace(/\s+Quest$/i, '').trim()}||${v.reward || ''}`;
+              if (vKey === normalizedKey) { expiredId = k; break; }
+            }
+          }
+          if (expiredId !== null) {
+            const old = expiredQuests.get(expiredId);
+            expiredQuests.delete(expiredId);
+            knownQuests.set(quest.id, {
+              ...(old || {}),
+              id: quest.id,
+              name: quest.name,
+              game: quest.game || old?.game || null,
+              reward: quest.reward,
+              tasks: quest.tasks?.length > 0 ? quest.tasks : (old?.tasks || []),
+              imageUrl: quest.imageUrl || old?.imageUrl || null,
+              startsAt: quest.startsAt || old?.startsAt || null,
+              expiresAt: quest.expiresAt,
+              detectedAt: old?.detectedAt || quest.detectedAt || new Date().toLocaleString(),
+            });
+            console.log(`  🔄 Re-activated from expired: ${quest.name}`);
+          }
+        }
+
         // Refresh fields that may have changed or been missing from old scraper data
         const existingQuest = knownQuests.get(quest.id);
         if (existingQuest) {
