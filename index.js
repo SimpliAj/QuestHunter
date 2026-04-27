@@ -2932,9 +2932,11 @@ app.post('/webhook/quests', async (req, res) => {
       // Check if this is a truly new quest (not previously notified)
       // Check by ID first, then by name+reward to catch regional duplicate IDs for the same quest
       const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim()}||${quest.reward || ''}`;
-      const isDuplicateByName = [...knownQuests.values(), ...expiredQuests.values()]
+      // Only check active knownQuests for name dedup — expired quests can return with a new ID
+      // and should trigger a fresh notification (e.g. recurring quests that Discord re-issues)
+      const isDuplicateByName = [...knownQuests.values()]
         .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim()}||${q.reward || ''}` === normalizedKey);
-      const isNew = !knownQuests.has(quest.id) && !expiredQuests.has(quest.id) && !isDuplicateByName;
+      const isNew = !knownQuests.has(quest.id) && !isDuplicateByName;
       
       if (isNew) {
         newQuestCount++;
