@@ -2091,8 +2091,10 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             const r = rewards[0];
             let reward = 'Unknown';
             if (r?.orb_quantity != null) {
-              const nitro = r.premium_orb_quantity ?? Math.round(r.orb_quantity * 1.2);
-              reward = `${r.orb_quantity} Discord Orbs (Nitro: ${nitro} Orbs)`;
+              const nitro = r.premium_orb_quantity;
+              reward = nitro != null
+                ? `${r.orb_quantity} Discord Orbs (Nitro: ${nitro} Orbs)`
+                : `${r.orb_quantity} Discord Orbs`;
             } else {
               const name = r?.messages?.name || r?.name || 'Unknown';
               const redemption = r?.messages?.redemption_instructions_by_platform?.['0'] || '';

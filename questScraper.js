@@ -99,9 +99,10 @@ function parseReward(config) {
   // Discord Orbs
   if (reward.orb_quantity != null) {
     const base = reward.orb_quantity;
-    // Use API value if set, otherwise calculate Nitro 1.2x multiplier
-    const nitro = reward.premium_orb_quantity ?? Math.round(base * 1.2);
-    return `${base} Discord Orbs (Nitro: ${nitro} Orbs)`;
+    const nitro = reward.premium_orb_quantity;
+    return nitro != null
+      ? `${base} Discord Orbs (Nitro: ${nitro} Orbs)`
+      : `${base} Discord Orbs`;
   }
 
   // Named reward — detect if it's a Discord Avatar Decoration vs a game item
