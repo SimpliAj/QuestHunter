@@ -1341,60 +1341,92 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
     }
 
     if (interaction.commandName === 'help') {
-      // Build quest commands field based on spoofguide setting
-      let questCommandsValue = '`/latestquest` - Show latest detected quest\n`/activequests` - List all active quests\n`/expiredquests` - List all expired quests';
-      
-      if (process.env.ENABLE_SPOOFGUIDE !== 'false') {
-        questCommandsValue += '\n`/spoofguide` - Get QuestPhantom guide';
-      }
+      const userId = interaction.user.id;
+      const spoofEnabled = process.env.ENABLE_SPOOFGUIDE !== 'false';
 
-      const helpEmbed = {
-        color: 0x5865F2,
-        title: '❓ QuestHunter Commands',
-        description: process.env.ENABLE_SPOOFGUIDE === 'false' 
-          ? '✨ QuestHunter is optimized for **QuestPhantom** users\n\nAll available commands for QuestHunter'
-          : 'All available commands for QuestHunter',
-        fields: [
-          {
-            name: '⚙️ Admin Commands',
-            value: '`/setup-channel` - Add a channel for quest notifications\n`/setup-expired-channel` - Set channel for expired quest notifications\n`/questpingrole` - Set a role to mention for quests\n`/remove` - Remove a channel or ping role',
-            inline: false
-          },
-          {
-            name: '📋 Info Commands',
-            value: '`/serverconfig` - View server configuration\n`/help` - Show this message\n`/stats` - View bot statistics',
-            inline: false
-          },
-          {
-            name: '🎯 Quest Commands',
-            value: questCommandsValue,
-            inline: false
-          },
-          {
-            name: '🗳️ Support QuestHunter',
-            value: '[Vote on top.gg](https://top.gg/de/bot/1474123878002462801/vote)',
-            inline: false
-          },
-          {
-            name: '💬 Support Discord',
-            value: '[Join our Discord](https://discord.gg/X5YKZBh9xV)',
-            inline: false
-          },
-          {
-            name: '💻 Source Code',
-            value: '[GitHub Repository](https://github.com/SimpliAj/QuestHunter)',
-            inline: false
-          }
-        ],
-        footer: {
-          text: 'QuestHunter',
-          icon_url: 'https://i.imgur.com/yTgBkjM.png'
+      const helpPages = [
+        {
+          color: 0x5865F2,
+          title: '🔍 QuestHunter',
+          description: 'Track Discord quests automatically and get notified when new ones appear!\n\nUse the arrows below to browse all commands.',
+          fields: [
+            { name: '🗳️ Vote', value: '[Vote on Top.gg](https://top.gg/de/bot/1474123878002462801/vote)', inline: true },
+            { name: '💬 Support', value: '[Join Discord](https://discord.gg/X5YKZBh9xV)', inline: true },
+            { name: '🌐 Website', value: '[questhunter.xyz](http://questhunter.xyz/)', inline: true },
+            { name: '💻 Source Code', value: '[GitHub](https://github.com/SimpliAj/QuestHunter)', inline: true },
+          ],
+          footer: { text: 'Page 1/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString()
         },
-        timestamp: new Date().toISOString()
-      };
+        {
+          color: 0x5865F2,
+          title: '⚙️ Admin Commands',
+          description: 'Commands that require **Manage Server** permission.',
+          fields: [
+            { name: '`/setup-channel`', value: 'Add a channel for quest notifications (with optional reward filter)', inline: false },
+            { name: '`/setup-expired-channel`', value: 'Set a channel to receive expired quest alerts', inline: false },
+            { name: '`/questpingrole`', value: 'Set a role to ping when new quests are detected', inline: false },
+            { name: '`/notification-style`', value: 'Choose notification style: default text or rich embed', inline: false },
+            { name: '`/remove`', value: 'Remove a notification channel or ping role', inline: false },
+          ],
+          footer: { text: 'Page 2/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString()
+        },
+        {
+          color: 0x5865F2,
+          title: '🎯 Quest Commands',
+          description: 'Browse and interact with Discord quests.',
+          fields: [
+            { name: '`/activequests`', value: 'List all currently active quests (filterable by reward type)', inline: false },
+            { name: '`/latestquest`', value: 'Show the most recently detected quest', inline: false },
+            { name: '`/expiredquests`', value: 'View all past expired quests', inline: false },
+            { name: '`/share`', value: 'Share a game code or reward from an active quest', inline: false },
+            ...(spoofEnabled ? [{ name: '`/spoofguide`', value: 'Get the QuestPhantom auto-complete guide', inline: false }] : []),
+          ],
+          footer: { text: 'Page 3/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString()
+        },
+        {
+          color: 0x5865F2,
+          title: '📋 Info & Utility',
+          description: 'General info and personal settings.',
+          fields: [
+            { name: '`/serverconfig`', value: 'View this server\'s current configuration', inline: false },
+            { name: '`/stats`', value: 'View bot statistics (servers, quests tracked, etc.)', inline: false },
+            { name: '`/info`', value: 'Learn how quests work and why you might not see one', inline: false },
+            { name: '`/dm-notifications`', value: 'Configure personal DM alerts for new quests', inline: false },
+            { name: '`/feedback`', value: 'Submit a bug report or feature request', inline: false },
+            { name: '`/help`', value: 'Show this help menu', inline: false },
+          ],
+          footer: { text: 'Page 4/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString()
+        },
+      ];
+
+      const buildHelpComponents = (page, total) => [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`help_prev_${userId}`)
+            .setLabel('◀ Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page === 0),
+          new ButtonBuilder()
+            .setCustomId(`help_next_${userId}`)
+            .setLabel('Next ▶')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page === total - 1)
+        )
+      ];
+
+      paginationState.set(`help_${userId}`, {
+        userId,
+        page: 0,
+        pages: helpPages,
+      });
 
       await interaction.reply({
-        embeds: [helpEmbed],
+        embeds: [helpPages[0]],
+        components: buildHelpComponents(0, helpPages.length),
         ephemeral: true,
       });
     }
@@ -2684,8 +2716,50 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // Handle help pagination buttons
+    if (interaction.customId.startsWith('help_prev_') || interaction.customId.startsWith('help_next_')) {
+      const userId = interaction.customId.split('_')[2];
+
+      if (interaction.user.id !== userId) {
+        return await interaction.reply({
+          content: '❌ Only the user who opened this help menu can navigate it.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const state = paginationState.get(`help_${userId}`);
+      if (!state) {
+        return await interaction.reply({
+          content: '❌ Session expired. Run `/help` again.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (interaction.customId.startsWith('help_next_') && state.page < state.pages.length - 1) state.page++;
+      else if (interaction.customId.startsWith('help_prev_') && state.page > 0) state.page--;
+
+      await interaction.update({
+        embeds: [state.pages[state.page]],
+        components: [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`help_prev_${userId}`)
+              .setLabel('◀ Previous')
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(state.page === 0),
+            new ButtonBuilder()
+              .setCustomId(`help_next_${userId}`)
+              .setLabel('Next ▶')
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(state.page === state.pages.length - 1)
+          )
+        ],
+      });
+      return;
+    }
+
     // Handle active quests pagination buttons
-    if (interaction.customId.startsWith('activequests_prev_') || 
+    if (interaction.customId.startsWith('activequests_prev_') ||
         interaction.customId.startsWith('activequests_next_')) {
       
       const userId = interaction.customId.split('_')[2];
