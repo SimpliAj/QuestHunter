@@ -3154,6 +3154,39 @@ app.post('/webhook/quests', async (req, res) => {
   }
 });
 
+
+// Stats API endpoint for web dashboard
+app.get('/api/stats', (req, res) => {
+  const totalServers = client.guilds.cache.size;
+  const totalChannels = Array.from(guildSettings.values()).reduce((sum, s) => sum + (s.channels?.length || 0), 0);
+  const totalUsers = client.guilds.cache.reduce((sum, g) => sum + (g.memberCount || 0), 0);
+  const normName = (q) => (q.name || '').replace(/\s+Quest$/i, '').trim();
+  const dedupeByName = (quests) => {
+    const seen = new Set();
+    return quests.filter(q => { const k = normName(q); if (seen.has(k)) return false; seen.add(k); return true; });
+  };
+  const uniqueActive = dedupeByName(Array.from(knownQuests.values()));
+  const activeNames = new Set(uniqueActive.map(normName));
+  const uniqueExpired = dedupeByName(Array.from(expiredQuests.values()).filter(q => !activeNames.has(normName(q))));
+  let totalOrbs = 0;
+  for (const q of [...uniqueActive, ...uniqueExpired]) {
+    if (/orb/i.test(q.reward || '')) {
+      const m = (q.reward || '').match(/(\d+)/);
+      if (m) totalOrbs += parseInt(m[1]);
+    }
+  }
+  res.json({
+    servers: totalServers,
+    channels: totalChannels,
+    activeQuests: uniqueActive.length,
+    trackedQuests: uniqueActive.length + uniqueExpired.length,
+    totalTrackedOrbs: totalOrbs,
+    usersReached: totalUsers,
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'Bot is running', timestamp: new Date() });
