@@ -2250,17 +2250,24 @@ function buildQuestPayload(questData, style, pingContent = '') {
     };
     if (questData.imageUrl) embed.thumbnail = { url: questData.imageUrl };
 
-    // Add regional link buttons if quest has multiple IDs
+    // Add regional link buttons if quest has multiple IDs (max 5 rows × 5 buttons = 25)
     const allIds = questData.allIds?.length > 1 ? questData.allIds : null;
     let components = undefined;
     if (allIds) {
-      const buttons = allIds.slice(0, 5).map((id, i) => ({
-        type: 2, // Button
-        style: 5, // Link
-        label: `Quest Link ${i + 1}`,
-        url: `https://discord.com/quests/${id}`,
-      }));
-      components = [{ type: 1, components: buttons }]; // ActionRow
+      const capped = allIds.slice(0, 25);
+      const rows = [];
+      for (let i = 0; i < capped.length; i += 5) {
+        rows.push({
+          type: 1,
+          components: capped.slice(i, i + 5).map((id, j) => ({
+            type: 2,
+            style: 5,
+            label: `Quest Link ${i + j + 1}`,
+            url: `https://discord.com/quests/${id}`,
+          })),
+        });
+      }
+      components = rows;
     }
 
     return { content: pingContent || undefined, embeds: [embed], components };
