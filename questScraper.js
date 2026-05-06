@@ -144,22 +144,22 @@ function getImageUrl(questId, config) {
   return ORBS_GIF;
 }
 
-function detectLanguageFlag(name) {
-  if (!name) return '🌐';
-  if (/[가-힣ᄀ-ᇿ]/.test(name)) return '🇰🇷';
-  if (/[぀-ゟ゠-ヿ]/.test(name)) return '🇯🇵';
-  if (/[一-鿿]/.test(name)) return '🇨🇳';
-  if (/[Ѐ-ӿ]/.test(name)) return '🇷🇺';
-  if (/[؀-ۿ]/.test(name)) return '🇸🇦';
-  if (/bande.annonce|odyssée/i.test(name)) return '🇫🇷';
-  if (/zwiastun|odyseja|ę|ą|ś|ź|ż|ń/i.test(name)) return '🇵🇱';
-  if (/\b(die|der|das)\b/i.test(name) || /odyssee/i.test(name)) return '🇩🇪';
-  if (/odisseia/i.test(name)) return '🇧🇷';
-  if (/odissea/i.test(name)) return '🇮🇹';
-  if (/tráiler|la odis/i.test(name)) return '🇪🇸';
-  if (/trailer for the|ø|å|æ/i.test(name)) return '🇩🇰';
-  if (/\bde\b|\bvan\b|\bhet\b/i.test(name)) return '🇳🇱';
-  return '🌐';
+function detectLanguageCode(name) {
+  if (!name) return null;
+  if (/[가-힣ᄀ-ᇿ]/.test(name)) return 'KR';
+  if (/[぀-ゟ゠-ヿ]/.test(name)) return 'JP';
+  if (/[一-鿿]/.test(name)) return 'CN';
+  if (/[Ѐ-ӿ]/.test(name)) return 'RU';
+  if (/[؀-ۿ]/.test(name)) return 'AR';
+  if (/bande.annonce|odyssée/i.test(name)) return 'FR';
+  if (/zwiastun|odyseja|ę|ą|ś|ź|ż|ń/i.test(name)) return 'PL';
+  if (/\b(die|der|das)\b/i.test(name) || /odyssee/i.test(name)) return 'DE';
+  if (/odisseia/i.test(name)) return 'PT';
+  if (/odissea/i.test(name)) return 'IT';
+  if (/tráiler|la odis/i.test(name)) return 'ES';
+  if (/trailer for the|ø|å|æ/i.test(name)) return 'DK';
+  if (/\bvan\b|\bhet\b/i.test(name)) return 'NL';
+  return null; // unknown — caller uses fallback label
 }
 
 function parseActiveQuests(allQuests) {
@@ -214,13 +214,13 @@ function parseActiveQuests(allQuests) {
     // Pure ASCII + no known non-English diacritics = likely English/neutral
     const isAsciiName = /^[\x20-\x7E]+$/.test(name + game);
 
-    const flag = detectLanguageFlag(name);
+    const code = detectLanguageCode(name);
 
     if (existingIdx != null) {
       const existing = active[existingIdx];
       if (!existing.allIds.includes(String(entry.id))) {
         existing.allIds.push(String(entry.id));
-        existing.allLinks.push({ id: String(entry.id), flag });
+        existing.allLinks.push({ id: String(entry.id), flag: code });
         // Prefer English variant for display: English app link > ASCII name > first seen
         const existingIsEnLink = existing._isEnglishLink;
         if (isEnglishLink && !existingIsEnLink) {
@@ -247,7 +247,7 @@ function parseActiveQuests(allQuests) {
     active.push({
       id: entry.id,
       allIds: [String(entry.id)],
-      allLinks: [{ id: String(entry.id), flag }],
+      allLinks: [{ id: String(entry.id), flag: code }],
       name,
       game,
       reward,

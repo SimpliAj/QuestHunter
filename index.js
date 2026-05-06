@@ -2257,18 +2257,24 @@ function buildQuestPayload(questData, style, pingContent = '') {
       // Build label map from allLinks if available, fallback to numbered labels
       const allLinks = questData.allLinks || [];
       const linkMap = new Map(allLinks.map(l => [String(l.id), l.flag]));
-      // Count flag occurrences to number duplicates
-      const flagCount = {};
+      // Count code occurrences to number duplicates; unknown get sequential numbers
+      const codeCount = {};
+      let unknownCount = 0;
       const capped = allIds.slice(0, 25);
       const rows = [];
       for (let i = 0; i < capped.length; i += 5) {
         rows.push({
           type: 1,
-          components: capped.slice(i, i + 5).map((id) => {
-            const flag = linkMap.get(String(id)) || '🌐';
-            flagCount[flag] = (flagCount[flag] || 0) + 1;
-            const count = flagCount[flag];
-            const label = count > 1 ? `${flag} #${count}` : flag;
+          components: capped.slice(i, i + 5).map((id, j) => {
+            const code = linkMap.get(String(id)) || null;
+            let label;
+            if (code) {
+              codeCount[code] = (codeCount[code] || 0) + 1;
+              label = codeCount[code] > 1 ? `${code} #${codeCount[code]}` : code;
+            } else {
+              unknownCount++;
+              label = `Quest Link ${unknownCount}`;
+            }
             return { type: 2, style: 5, label, url: `https://discord.com/quests/${id}` };
           }),
         });
