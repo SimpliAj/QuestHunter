@@ -2364,7 +2364,7 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
       expiresAt: questData.expiresAt,
       detectedAt: questData.detectedAt || new Date().toLocaleString(),
       messageId: message.id,
-      allIds: existing.allIds || [questData.id],
+      allIds: questData.allIds?.length > (existing.allIds?.length || 0) ? questData.allIds.map(String) : (existing.allIds || [questData.id]),
       guildMessages: [...(existing.guildMessages || []), { guildId, channelId, messageId: message.id }],
       notified: true,
     });
@@ -3042,7 +3042,7 @@ app.post('/webhook/quests', async (req, res) => {
           startsAt: quest.startsAt || null,
           expiresAt: quest.expiresAt,
           detectedAt: quest.detectedAt || new Date().toLocaleString(),
-          allIds: [quest.id],
+          allIds: quest.allIds?.length > 0 ? quest.allIds.map(String) : [quest.id],
           guildMessages: [],
         });
 
