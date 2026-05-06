@@ -2342,8 +2342,10 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
 
     console.log(`  ✅ Sent to <#${channelId}> [${notificationStyle}]`);
 
-    // Track this quest
+    // Track this quest — preserve allIds/guildMessages set before this call
+    const existing = knownQuests.get(questData.id) || {};
     knownQuests.set(questData.id, {
+      ...existing,
       id: questData.id,
       name: questData.name,
       game: questData.game || null,
@@ -2355,9 +2357,11 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
       expiresAt: questData.expiresAt,
       detectedAt: questData.detectedAt || new Date().toLocaleString(),
       messageId: message.id,
+      allIds: existing.allIds || [questData.id],
+      guildMessages: [...(existing.guildMessages || []), { guildId, channelId, messageId: message.id }],
       notified: true,
     });
-    
+
     // Save data after adding quest
     saveData();
     
@@ -3031,6 +3035,8 @@ app.post('/webhook/quests', async (req, res) => {
           startsAt: quest.startsAt || null,
           expiresAt: quest.expiresAt,
           detectedAt: quest.detectedAt || new Date().toLocaleString(),
+          allIds: [quest.id],
+          guildMessages: [],
         });
 
         // Only send notifications if bot is fully ready
@@ -3083,7 +3089,28 @@ app.post('/webhook/quests', async (req, res) => {
         }
       } else {
         if (isDuplicateByRewardExpiry && !knownQuests.has(quest.id) && !isDuplicateByName) {
-          console.log(`  🌍 LANG-VARIANT skipped: ${quest.name} (same reward+expiry as known quest)`);
+          // Find original quest and append this language variant's ID
+          const original = [...knownQuests.values()].find(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt);
+          if (original) {
+            const updatedAllIds = [...new Set([...(original.allIds || [original.id]), quest.id])];
+            knownQuests.set(original.id, { ...original, allIds: updatedAllIds });
+            saveData();
+            console.log(`  🌍 LANG-VARIANT: ${quest.name} → added to quest ${original.id} (${updatedAllIds.length} links total)`);
+
+            // Edit existing Discord notification messages to show updated link buttons
+            for (const gm of (original.guildMessages || [])) {
+              try {
+                const ch = await client.channels.fetch(gm.channelId);
+                const msg = await ch.messages.fetch(gm.messageId);
+                const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
+                const updatedPayload = buildQuestPayload({ ...original, allIds: updatedAllIds }, style);
+                await msg.edit(updatedPayload);
+                console.log(`  ✏️  Updated message ${gm.messageId} in channel ${gm.channelId}`);
+              } catch (e) {
+                console.error(`  ⚠️  Could not edit message for lang variant:`, e.message);
+              }
+            }
+          }
         } else {
           console.log(`  ℹ️  EXISTING: ${quest.name}`);
         }
