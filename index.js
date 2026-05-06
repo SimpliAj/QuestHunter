@@ -2254,17 +2254,23 @@ function buildQuestPayload(questData, style, pingContent = '') {
     const allIds = questData.allIds?.length > 1 ? questData.allIds : null;
     let components = undefined;
     if (allIds) {
+      // Build label map from allLinks if available, fallback to numbered labels
+      const allLinks = questData.allLinks || [];
+      const linkMap = new Map(allLinks.map(l => [String(l.id), l.flag]));
+      // Count flag occurrences to number duplicates
+      const flagCount = {};
       const capped = allIds.slice(0, 25);
       const rows = [];
       for (let i = 0; i < capped.length; i += 5) {
         rows.push({
           type: 1,
-          components: capped.slice(i, i + 5).map((id, j) => ({
-            type: 2,
-            style: 5,
-            label: `Quest Link ${i + j + 1}`,
-            url: `https://discord.com/quests/${id}`,
-          })),
+          components: capped.slice(i, i + 5).map((id) => {
+            const flag = linkMap.get(String(id)) || '🌐';
+            flagCount[flag] = (flagCount[flag] || 0) + 1;
+            const count = flagCount[flag];
+            const label = count > 1 ? `${flag} #${count}` : flag;
+            return { type: 2, style: 5, label, url: `https://discord.com/quests/${id}` };
+          }),
         });
       }
       components = rows;
@@ -2365,6 +2371,7 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
       detectedAt: questData.detectedAt || new Date().toLocaleString(),
       messageId: message.id,
       allIds: questData.allIds?.length > (existing.allIds?.length || 0) ? questData.allIds.map(String) : (existing.allIds || [questData.id]),
+      allLinks: questData.allLinks?.length > (existing.allLinks?.length || 0) ? questData.allLinks : (existing.allLinks || []),
       guildMessages: [...(existing.guildMessages || []), { guildId, channelId, messageId: message.id }],
       notified: true,
     });
@@ -3043,6 +3050,7 @@ app.post('/webhook/quests', async (req, res) => {
           expiresAt: quest.expiresAt,
           detectedAt: quest.detectedAt || new Date().toLocaleString(),
           allIds: quest.allIds?.length > 0 ? quest.allIds.map(String) : [quest.id],
+          allLinks: quest.allLinks || [],
           guildMessages: [],
         });
 
