@@ -3010,7 +3010,10 @@ app.post('/webhook/quests', async (req, res) => {
       // and should trigger a fresh notification (e.g. recurring quests that Discord re-issues)
       const isDuplicateByName = [...knownQuests.values()]
         .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim()}||${q.reward || ''}` === normalizedKey);
-      const isNew = !knownQuests.has(quest.id) && !isDuplicateByName;
+      // Language variants have different names but same reward + expiry (e.g. Odyssey trailer in 13 languages)
+      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && [...knownQuests.values()]
+        .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt));
+      const isNew = !knownQuests.has(quest.id) && !isDuplicateByName && !isDuplicateByRewardExpiry;
       
       if (isNew) {
         newQuestCount++;
@@ -3079,7 +3082,11 @@ app.post('/webhook/quests', async (req, res) => {
           console.log(`  ⏸️  Skipping notification (bot still initializing)`);
         }
       } else {
-        console.log(`  ℹ️  EXISTING: ${quest.name}`);
+        if (isDuplicateByRewardExpiry && !knownQuests.has(quest.id) && !isDuplicateByName) {
+          console.log(`  🌍 LANG-VARIANT skipped: ${quest.name} (same reward+expiry as known quest)`);
+        } else {
+          console.log(`  ℹ️  EXISTING: ${quest.name}`);
+        }
 
         // Re-activate quest if scraper says it's active but it ended up in expiredQuests
         if (!knownQuests.has(quest.id)) {
