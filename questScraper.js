@@ -151,7 +151,8 @@ function parseActiveQuests(allQuests) {
     new Date(b.config?.starts_at || 0) - new Date(a.config?.starts_at || 0)
   );
   const active = [];
-  const seenKeys = new Map(); // name+reward → index in active array
+  const seenKeys = new Map();    // name+reward → index in active array
+  const seenAltKeys = new Map(); // applicationId+expiresAt → index (catches language variants)
 
   for (const entry of sorted) {
     const config = entry.config;
@@ -175,14 +176,23 @@ function parseActiveQuests(allQuests) {
       continue;
     }
 
-    // Deduplicate regional variants — collect all IDs for the same quest
+    // Build dedup keys
     const normalizedName = questName.replace(/\s+Quest$/i, '').trim();
     const dedupeKey = `${normalizedName}||${reward}`;
-    if (seenKeys.has(dedupeKey)) {
-      const existing = active[seenKeys.get(dedupeKey)];
+    // applicationId is identical across all language variants of the same quest
+    const applicationId = config.application?.id || config.application_id;
+    const altDedupeKey = applicationId ? `app:${applicationId}||${config.expires_at}` : null;
+
+    // Check both keys — language variants share applicationId+expiresAt even if names differ
+    const nameIdx = seenKeys.get(dedupeKey);
+    const altIdx = altDedupeKey != null ? seenAltKeys.get(altDedupeKey) : undefined;
+    const existingIdx = nameIdx ?? altIdx;
+
+    if (existingIdx != null) {
+      const existing = active[existingIdx];
       if (!existing.allIds.includes(String(entry.id))) {
         existing.allIds.push(String(entry.id));
-        console.log(`  🔗 Added regional variant ID ${entry.id} to "${questName}"`);
+        console.log(`  🔗 Added lang variant ${entry.id} ("${questName}") to "${existing.name}"`);
       }
       continue;
     }
@@ -192,7 +202,9 @@ function parseActiveQuests(allQuests) {
     const game = config.messages?.game_title || config.application?.name || 'Unknown';
     const imageUrl = getImageUrl(entry.id, config);
 
-    seenKeys.set(dedupeKey, active.length);
+    const idx = active.length;
+    seenKeys.set(dedupeKey, idx);
+    if (altDedupeKey) seenAltKeys.set(altDedupeKey, idx);
     active.push({
       id: entry.id,
       allIds: [String(entry.id)],
