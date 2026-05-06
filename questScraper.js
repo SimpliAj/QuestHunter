@@ -188,18 +188,37 @@ function parseActiveQuests(allQuests) {
     const altIdx = altDedupeKey != null ? seenAltKeys.get(altDedupeKey) : undefined;
     const existingIdx = nameIdx ?? altIdx;
 
+    const appLink = config.application?.link || config.application?.store_link || '';
+    // application.name is registered in English; game_title is localized
+    const name = config.messages?.quest_name || 'Unknown';
+    const game = config.application?.name || config.messages?.game_title || 'Unknown';
+    const isEnglishLink = /\/en[-_/]|\/en$/i.test(appLink);
+    // Pure ASCII + no known non-English diacritics = likely English/neutral
+    const isAsciiName = /^[\x20-\x7E]+$/.test(name + game);
+
     if (existingIdx != null) {
       const existing = active[existingIdx];
       if (!existing.allIds.includes(String(entry.id))) {
         existing.allIds.push(String(entry.id));
+        // Prefer English variant for display: English app link > ASCII name > first seen
+        const existingIsEnLink = existing._isEnglishLink;
+        if (isEnglishLink && !existingIsEnLink) {
+          existing.name = name;
+          existing.game = game;
+          existing._isEnglishLink = true;
+          console.log(`  🇬🇧 Switched to English variant: "${name}"`);
+        } else if (!existingIsEnLink && isAsciiName && !/^[\x20-\x7E]+$/.test(existing.name)) {
+          // Existing has non-ASCII, this one is ASCII — prefer it
+          existing.name = name;
+          existing.game = game;
+          console.log(`  🇬🇧 Switched to ASCII variant: "${name}"`);
+        }
         console.log(`  🔗 Added lang variant ${entry.id} ("${questName}") to "${existing.name}"`);
       }
       continue;
     }
 
     const tasks = parseTasks(config);
-    const name = config.messages?.quest_name || 'Unknown';
-    const game = config.messages?.game_title || config.application?.name || 'Unknown';
     const imageUrl = getImageUrl(entry.id, config);
 
     const idx = active.length;
@@ -217,6 +236,7 @@ function parseActiveQuests(allQuests) {
       expiresAt: config.expires_at,
       detectedAt: new Date().toLocaleString(),
       isNew: !notifiedQuestIds.has(entry.id),
+      _isEnglishLink: isEnglishLink,
     });
   }
 
