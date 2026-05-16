@@ -2440,9 +2440,9 @@ async function sendDMNotifications(questData) {
         if (dmCount >= nextVoteAt) {
           try {
             if (dmStyle === 'embed') {
-              await user.send({ embeds: [{ color: 0x5865F2, description: '⭐ Enjoying QuestFinder? Help us grow!\n[🗳️ Vote on Top.gg](https://top.gg/bot/1474123878002462801/vote)' }] });
+              await user.send({ embeds: [{ color: 0x5865F2, description: '⭐ Enjoying QuestHunter? Help us grow!\n[🗳️ Vote on Top.gg](https://top.gg/bot/1474123878002462801/vote)' }] });
             } else {
-              await user.send(`⭐ Enjoying QuestFinder? Vote for us: <https://top.gg/bot/1474123878002462801/vote>`);
+              await user.send(`⭐ Enjoying QuestHunter? Vote for us: <https://top.gg/bot/1474123878002462801/vote>`);
             }
           } catch (_) {}
           prefs.dmCount = 0;
