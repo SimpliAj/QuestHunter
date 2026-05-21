@@ -2233,30 +2233,6 @@ function buildQuestPayload(questData, style, pingContent = '') {
 
   if (style === 'embed') {
     const fields = [];
-    const siblings = questData.siblings || [];
-
-    if (siblings.length > 0) {
-      // Multiple variants: list each reward+task as description lines
-      const allVariants = [questData, ...siblings];
-      const descLines = allVariants.map(v => {
-        const taskStr = v.tasks?.length > 0 ? ` · ${v.tasks.join(' / ')}` : '';
-        return `🏆 [${v.reward || 'Unknown'}](https://discord.com/quests/${v.id})${taskStr}`;
-      });
-      fields.push({ name: '⏰ Expires', value: expiryText, inline: true });
-      const embed = {
-        color: 0x5865F2,
-        author: questData.game ? { name: `🎮 ${questData.game}` } : undefined,
-        title: questData.name,
-        url: questLink,
-        description: descLines.join('\n'),
-        fields,
-        footer: { text: 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
-        timestamp: new Date().toISOString(),
-      };
-      if (questData.imageUrl) embed.thumbnail = { url: questData.imageUrl };
-      return { content: pingContent || undefined, embeds: [embed] };
-    }
-
     if (questData.tasks?.length > 0) {
       fields.push({ name: '📱 Task', value: questData.tasks.join(' / '), inline: true });
     }
@@ -2331,52 +2307,6 @@ function buildQuestPayload(questData, style, pingContent = '') {
     content += questLink;
   }
   return { content };
-}
-
-async function groupSiblingQuest(primaryQuestId, newQuest) {
-  const primary = knownQuests.get(primaryQuestId);
-  if (!primary) return;
-
-  const siblings = primary.siblings || [];
-  siblings.push({
-    id: newQuest.id,
-    reward: newQuest.reward,
-    tasks: newQuest.tasks || [],
-    game: newQuest.game || null,
-    expiresAt: newQuest.expiresAt,
-    allIds: newQuest.allIds || [newQuest.id],
-    allLinks: newQuest.allLinks || [],
-  });
-
-  knownQuests.set(primaryQuestId, { ...primary, siblings });
-  // Register new ID as known so it won't re-trigger
-  knownQuests.set(newQuest.id, {
-    id: newQuest.id, name: newQuest.name, game: newQuest.game || null,
-    reward: newQuest.reward, tasks: newQuest.tasks || [], expiresAt: newQuest.expiresAt,
-    primaryQuestId, guildMessages: [], notified: true,
-  });
-
-  console.log(`  🔗 SIBLING: "${newQuest.name}" (${newQuest.reward}) grouped with primary ${primaryQuestId}`);
-
-  const updatedPrimary = knownQuests.get(primaryQuestId);
-  let editedCount = 0;
-  for (const { guildId, channelId, messageId } of (primary.guildMessages || [])) {
-    try {
-      const channel = await client.channels.fetch(channelId);
-      if (!channel) continue;
-      const message = await channel.messages.fetch(messageId);
-      if (!message) continue;
-      const style = guildSettings.get(guildId)?.notificationStyle || 'default';
-      const updatedPayload = buildQuestPayload(updatedPrimary, style);
-      await message.edit(updatedPayload);
-      editedCount++;
-    } catch (err) {
-      console.error(`  ⚠️  Could not edit message ${messageId} in ${channelId}:`, err.message);
-    }
-  }
-
-  console.log(`  ✅ Edited ${editedCount}/${(primary.guildMessages || []).length} messages`);
-  saveData();
 }
 
 async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all') {
@@ -3099,8 +3029,7 @@ app.post('/webhook/quests', async (req, res) => {
     for (const quest of quests) {
       // Check if this is a truly new quest (not previously notified)
       // Check by ID first, then by name+reward to catch regional duplicate IDs for the same quest
-      const normalizedName = (quest.name || '').replace(/\s+Quest$/i, '').trim();
-      const normalizedKey = `${normalizedName}||${quest.reward || ''}`;
+      const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim()}||${quest.reward || ''}`;
       // Only check active knownQuests for name dedup — expired quests can return with a new ID
       // and should trigger a fresh notification (e.g. recurring quests that Discord re-issues)
       const isDuplicateByName = [...knownQuests.values()]
@@ -3108,12 +3037,7 @@ app.post('/webhook/quests', async (req, res) => {
       // Language variants have different names but same reward + expiry (e.g. Odyssey trailer in 13 languages)
       const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && [...knownQuests.values()]
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt));
-      // Sibling: same name, different reward — group into existing message instead of new send
-      const siblingQuest = !knownQuests.has(quest.id) && !isDuplicateByName && !isDuplicateByRewardExpiry
-        ? [...knownQuests.values()].find(q =>
-            (q.name || '').replace(/\s+Quest$/i, '').trim() === normalizedName && !q.primaryQuestId)
-        : null;
-      const isNew = !siblingQuest && !knownQuests.has(quest.id) && !isDuplicateByName && !isDuplicateByRewardExpiry;
+      const isNew = !knownQuests.has(quest.id) && !isDuplicateByName && !isDuplicateByRewardExpiry;
       
       if (isNew) {
         newQuestCount++;
@@ -3184,8 +3108,6 @@ app.post('/webhook/quests', async (req, res) => {
         } else {
           console.log(`  ⏸️  Skipping notification (bot still initializing)`);
         }
-      } else if (siblingQuest && botReady) {
-        await groupSiblingQuest(siblingQuest.id, quest);
       } else {
         if (isDuplicateByRewardExpiry && !knownQuests.has(quest.id) && !isDuplicateByName) {
           // Find original quest and append this language variant's ID
