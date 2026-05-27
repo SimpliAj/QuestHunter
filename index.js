@@ -723,6 +723,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (!interaction.isCommand()) return;
+  if (!interaction.guild || !interaction.member) return;
 
   try {
     if (interaction.commandName === 'setup-channel') {
@@ -2387,6 +2388,23 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
     
   } catch (error) {
     console.error(`  ❌ Error sending to channel ${channelId}:`, error.message);
+    if (error.code === 10003 || error.code === 50013 || error.code === 50001) {
+      for (const [gId, settings] of guildSettings) {
+        if (settings.channels) {
+          const before = settings.channels.length;
+          settings.channels = settings.channels.filter(ch => ch.id !== channelId);
+          if (settings.channels.length < before) {
+            console.log(`  🧹 Removed stale channel ${channelId} from guild ${gId}`);
+            saveData();
+          }
+        }
+        if (settings.channelId === channelId) {
+          delete settings.channelId;
+          console.log(`  🧹 Removed stale default channel ${channelId} from guild ${gId}`);
+          saveData();
+        }
+      }
+    }
   }
 }
 
@@ -2510,6 +2528,15 @@ async function notifyExpiredQuest(channelId, questData) {
     
   } catch (error) {
     console.error(`  ❌ Error sending expired notification to channel ${channelId}:`, error.message);
+    if (error.code === 10003 || error.code === 50013 || error.code === 50001) {
+      for (const [gId, settings] of guildSettings) {
+        if (settings.expiredChannelId === channelId) {
+          delete settings.expiredChannelId;
+          console.log(`  🧹 Removed stale expired-channel ${channelId} from guild ${gId}`);
+          saveData();
+        }
+      }
+    }
   }
 }
 
@@ -3076,6 +3103,14 @@ app.post('/webhook/quests', async (req, res) => {
                     sentToCount++;
                   } catch (chError) {
                     console.error(`⚠️  Error sending to channel ${ch.id}:`, chError.message);
+                    if (chError.code === 10003 || chError.code === 50013 || chError.code === 50001) {
+                      const s = guildSettings.get(guildId);
+                      if (s?.channels) {
+                        s.channels = s.channels.filter(c => c.id !== ch.id);
+                        console.log(`  🧹 Removed stale channel ${ch.id} from guild ${guildId}`);
+                        saveData();
+                      }
+                    }
                   }
                 }
               }

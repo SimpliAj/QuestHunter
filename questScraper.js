@@ -274,7 +274,7 @@ async function sendQuestsToBot(quests) {
       quests,
       channelId: NOTIFICATION_CHANNEL_ID,
       timestamp: new Date()
-    }, { timeout: 5000 });
+    }, { timeout: 15000 });
     console.log('✅ Quests sent to bot successfully');
   } catch (e) {
     console.error('❌ Failed to send quests to bot:', e.message);
