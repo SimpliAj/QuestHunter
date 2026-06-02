@@ -2945,18 +2945,33 @@ app.post('/webhook/quests', async (req, res) => {
       return false;
     }
     
-    // Track which quests are currently sent by scraper
-    const currentQuestIds = new Set(quests.map(q => q.id));
-    
+    // Track which quests are currently sent by scraper (include allIds from each quest)
+    const currentQuestIds = new Set();
+    for (const q of quests) {
+      currentQuestIds.add(String(q.id));
+      for (const id of (q.allIds || [])) currentQuestIds.add(String(id));
+    }
+
     // Find quests that were active but are no longer sent (expired/deleted by Discord)
     const expiredQuestsList = [];
+    const expiredPrimaryIds = new Set();
     knownQuests.forEach((quest, questId) => {
-      // Mark as expired if it's no longer sent by scraper (regardless of original expiry date)
-      if (!currentQuestIds.has(questId)) {
+      // Skip alias entries — only process primary IDs to avoid duplicate expiry events
+      if (String(quest.id) !== String(questId)) return;
+
+      // Check if any of the quest's IDs is still active
+      const allIds = (quest.allIds || [String(questId)]).map(String);
+      const stillActive = allIds.some(id => currentQuestIds.has(id));
+
+      if (!stillActive && !expiredPrimaryIds.has(String(questId))) {
+        expiredPrimaryIds.add(String(questId));
         expiredQuestsList.push(quest);
-        // Move to expired quests
-        expiredQuests.set(questId, quest);
-        knownQuests.delete(questId);
+        expiredQuests.set(String(questId), quest);
+        // Remove primary and all alias entries
+        knownQuests.delete(String(questId));
+        for (const vid of allIds) {
+          if (vid !== String(questId)) knownQuests.delete(vid);
+        }
       }
     });
     
@@ -3035,9 +3050,8 @@ app.post('/webhook/quests', async (req, res) => {
           allLinks: quest.allLinks || [],
           guildMessages: [],
         };
-        // Register under primary ID and all variant IDs so any future ID hit returns known
+        // Register under primary ID only — allIds checked separately in the isNew logic
         knownQuests.set(String(quest.id), questEntry);
-        for (const vid of questEntry.allIds) knownQuests.set(vid, questEntry);
 
         // Only send notifications if bot is fully ready
         if (botReady) {
