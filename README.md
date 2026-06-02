@@ -6,7 +6,7 @@
 
 ## 📋 Overview
 
-QuestHunter is a Discord bot that automatically detects new Discord quests and broadcasts them to your servers. It uses a live JSON data feed for fast and reliable quest detection — no scraping required.
+QuestHunter is a Discord bot that automatically detects new Discord quests and broadcasts them to your servers. It uses **dual-source detection** — pulling from both `api.discordquest.com` (primary) and the GitHub JSON feed (fallback) for maximum reliability.
 
 Invite the bot through [this link](https://discord.com/oauth2/authorize?client_id=1474123878002462801&permissions=2147699712&integration_type=0&scope=bot) if you don't want to host your own bot.
 
@@ -20,16 +20,17 @@ Invite the bot through [this link](https://discord.com/oauth2/authorize?client_i
 
 | Feature | Description |
 |---------|-------------|
-| 🔍 **Live Quest Detection** | Pulls from a live JSON feed — fast, reliable, no scraping |
+| 🔍 **Dual-Source Detection** | Pulls from `api.discordquest.com` + GitHub feed — merged, deduped, maximum coverage |
 | 📢 **Multi-Server Broadcasting** | Send quest notifications to multiple Discord servers simultaneously |
-| 🎯 **Smart Filtering** | Filter quests by reward type (Orbs only, No Orbs, All quests) |
+| 🎯 **Smart Filtering** | Filter quests by reward type (Orbs only, No Orbs, Decorations, All) |
 | 🎨 **Notification Styles** | Choose between a clean text message or a rich embed card per server |
-| 🖼️ **Reward Thumbnails** | Automatically shows the reward image for each quest |
+| 🖼️ **Reward Thumbnails** | Shows reward image: animated GIF for decorations, PNG for game items, Orbs icon for orb rewards |
+| 🎞️ **MP4 → GIF Conversion** | Avatar decoration previews (MP4) are auto-converted to animated GIFs via ffmpeg |
 | 💾 **Persistent Storage** | Remembers known quests — no duplicate notifications |
 | 🔔 **Role Mentions** | Automatically ping specific roles when new quests arrive |
-| ⏱️ **Configurable Interval** | Set custom scan intervals (default: 30 minutes) |
+| ⏱️ **Configurable Interval** | Set custom scan intervals (default: 15 minutes) |
 | 🛠️ **Easy Setup** | Simple slash commands for server configuration |
-| 🌐 **VPS Ready** | Deploy on Linux servers with PM2 |
+| 🌐 **VPS Ready** | Deploy on Linux servers with PM2 (ffmpeg required for GIF conversion) |
 
 ---
 
@@ -86,8 +87,12 @@ WEBHOOK_PORT=3001
 SCRAPER_INTERVAL=1800000          # 30 minutes in milliseconds
 NOTIFICATION_CHANNEL_ID=          # Default channel ID for notifications
 ERROR_WEBHOOK=                    # Optional: webhook URL for error alerts
-ADMIN_USER_ID=                    # Your Discord user ID (for /quest-test)
+ADMIN_USER_ID=                    # Your Discord user ID (for /adminpanel)
+GIF_SERVE_URL=https://yourdomain.com/quest-gifs  # Public URL where GIFs are served
+GIF_SERVE_DIR=/path/to/public/gifs               # Local directory for converted GIFs (ffmpeg required)
 ```
+
+> **GIF Conversion:** Install ffmpeg (`apt install ffmpeg`) and set `GIF_SERVE_DIR` + `GIF_SERVE_URL` to enable animated avatar decoration thumbnails. Without these, a static fallback image is used.
 
 ### Slash Commands
 

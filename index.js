@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { REST } = require('discord.js');
 const { Routes } = require('discord.js');
 const dotenv = require('dotenv');
@@ -479,28 +479,6 @@ async function registerSlashCommands() {
       description: 'Show bot statistics',
     },
     {
-      name: 'info',
-      description: 'Information about how quests work and why you might not see a quest',
-    },
-    {
-      name: 'announce',
-      description: 'Broadcast an announcement to all configured guild channels (Admin only)',
-      options: [
-        {
-          name: 'title',
-          description: 'Announcement title',
-          type: 3, // STRING type
-          required: true,
-        },
-        {
-          name: 'message',
-          description: 'Announcement message',
-          type: 3, // STRING type
-          required: true,
-        },
-      ],
-    },
-    {
       name: 'remove',
       description: 'Remove a channel or ping role',
       options: [
@@ -612,29 +590,9 @@ async function registerSlashCommands() {
       default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
     },
     {
-      name: 'quest-test',
-      description: 'Send test quest notifications to this channel (Bot Admin only)',
-      options: [
-        {
-          name: 'style',
-          description: 'Style to test (defaults to this server\'s current setting)',
-          type: 3,
-          required: false,
-          choices: [
-            { name: 'Default (text + auto-embed)', value: 'default' },
-            { name: 'Embed (rich card with reward image)', value: 'embed' },
-          ],
-        },
-        {
-          name: 'count',
-          description: 'How many quest examples to send (1–15, default 1)',
-          type: 4,
-          required: false,
-          min_value: 1,
-          max_value: 15,
-        },
-      ],
-    }
+      name: 'adminpanel',
+      description: 'Open the admin control panel (Bot Admin only)',
+    },
   );
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -673,6 +631,55 @@ async function scanForQuests() {
   } catch (error) {
     console.error('❌ Error scanning for quests:', error);
   }
+}
+
+function buildStatsEmbed() {
+  const totalServers = client.guilds.cache.size;
+  const totalChannels = Array.from(guildSettings.values()).reduce((sum, s) => sum + (s.channels?.length || 0), 0);
+  const normName = (q) => (q.name || '').replace(/\s+Quest$/i, '').trim();
+  const dedupeByName = (quests) => {
+    const seen = new Set();
+    return quests.filter(q => { const k = normName(q); if (seen.has(k)) return false; seen.add(k); return true; });
+  };
+  const uniqueActive = dedupeByName(Array.from(knownQuests.values()));
+  const activeNames = new Set(uniqueActive.map(normName));
+  const uniqueExpired = dedupeByName(Array.from(expiredQuests.values()).filter(q => !activeNames.has(normName(q))));
+  const activeQuests = uniqueActive.length;
+  const totalTrackedQuests = activeQuests + uniqueExpired.length;
+  let availableOrbs = 0, availableDecorations = 0, availableGameItems = 0;
+  let totalTrackedOrbs = 0, totalTrackedDecorations = 0, totalTrackedGameItems = 0;
+  for (const quest of uniqueActive) {
+    const r = quest.reward?.toLowerCase() || '';
+    if (r.includes('decoration') || r.includes('dekoration')) { availableDecorations++; }
+    else if (r.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) { const m = quest.reward?.match(/(\d+)/); if (m) availableOrbs += parseInt(m[1]); }
+    else if (quest.reward) { availableGameItems++; }
+  }
+  for (const quest of [...uniqueActive, ...uniqueExpired]) {
+    const r = quest.reward?.toLowerCase() || '';
+    if (r.includes('decoration') || r.includes('dekoration')) { totalTrackedDecorations++; }
+    else if (r.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) { const m = quest.reward?.match(/(\d+)/); if (m) totalTrackedOrbs += parseInt(m[1]); }
+    else if (quest.reward) { totalTrackedGameItems++; }
+  }
+  return {
+    color: 0x5865F2,
+    title: '📊 Bot Statistics',
+    description: 'QuestHunter Performance Metrics',
+    fields: [
+      { name: '═══ QUESTS ═══', value: '** **', inline: false },
+      { name: '✨ Active Quests', value: activeQuests.toString(), inline: true },
+      { name: '📚 Tracked Quests', value: totalTrackedQuests.toString(), inline: true },
+      { name: '═══ Available to Earn ═══', value: '** **', inline: false },
+      { name: '<:orbs:1476345614412288040> Orbs', value: availableOrbs.toLocaleString(), inline: true },
+      { name: '🎨 Decorations', value: availableDecorations.toString(), inline: true },
+      { name: '🎮 Game Items', value: availableGameItems.toString(), inline: true },
+      { name: '═══ Total Tracked ═══', value: '** **', inline: false },
+      { name: '<:orbs:1476345614412288040> Orbs', value: totalTrackedOrbs.toLocaleString(), inline: true },
+      { name: '🎨 Decorations', value: totalTrackedDecorations.toString(), inline: true },
+      { name: '🎮 Game Items', value: totalTrackedGameItems.toString(), inline: true },
+    ],
+    footer: { text: `QuestHunter v${BOT_VERSION} • Helping ${totalServers} Servers`, icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+    timestamp: new Date().toISOString(),
+  };
 }
 
 // Listen for slash commands
@@ -723,14 +730,24 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (!interaction.isCommand()) return;
-  if (!interaction.guild || !interaction.member) return;
+
+  const DM_ALLOWED_COMMANDS = ['stats', 'help', 'activequests'];
+
+  if (!interaction.guild) {
+    if (!DM_ALLOWED_COMMANDS.includes(interaction.commandName)) {
+      return await interaction.reply({ content: '❌ This command can only be used in a server.', flags: 64 }).catch(() => {});
+    }
+    // fall through to handlers below
+  } else if (!interaction.member) {
+    return;
+  }
 
   try {
     if (interaction.commandName === 'setup-channel') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
         return await interaction.reply({
           content: '❌ You need the Manage Guild permission to use this command',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -742,7 +759,7 @@ client.on('interactionCreate', async (interaction) => {
       if (missingPermissions.length > 0) {
         return await interaction.reply({
           content: `❌ **Bot is missing permissions!**\n\nThe bot needs the following permissions to work:\n${missingPermissions.map(p => `• ${p}`).join('\n')}\n\nPlease give the bot these permissions and try again.`,
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -795,7 +812,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: 64,
       });
     }
 
@@ -803,7 +820,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
         return await interaction.reply({
           content: '❌ You need the Manage Guild permission to use this command',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -835,7 +852,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: 64,
       });
     }
 
@@ -843,7 +860,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
         return await interaction.reply({
           content: '❌ You need the Manage Guild permission to use this command',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -855,7 +872,7 @@ client.on('interactionCreate', async (interaction) => {
       if (missingPermissions.length > 0) {
         return await interaction.reply({
           content: `❌ **Bot is missing permissions!**\n\nThe bot needs the following permissions to work:\n${missingPermissions.map(p => `• ${p}`).join('\n')}\n\nPlease give the bot these permissions and try again.`,
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -888,7 +905,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: 64,
       });
     }
 
@@ -947,7 +964,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: 64,
       });
     }
 
@@ -956,7 +973,7 @@ client.on('interactionCreate', async (interaction) => {
       if (process.env.ENABLE_SPOOFGUIDE === 'false') {
         await interaction.reply({
           content: '❌ This command is currently disabled.',
-          ephemeral: true,
+          flags: 64,
         });
         return;
       }
@@ -993,7 +1010,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
       await interaction.reply({
         content: guide,
-        ephemeral: true,
+        flags: 64,
       });
     }
 
@@ -1001,7 +1018,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (knownQuests.size === 0) {
         return await interaction.reply({
           content: '❌ No quests detected yet.',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -1016,7 +1033,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
       await interaction.reply({ 
         content: `**Latest Quest Added**: ${lastQuest.name}\n${questLink}`, 
-        ephemeral: true 
+        flags: 64 
       });
     }
 
@@ -1024,7 +1041,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (knownQuests.size === 0) {
         return await interaction.reply({
           content: '❌ No quests tracked yet.',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -1068,7 +1085,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         
         return await interaction.reply({
           content: `❌ No active ${filterText} quests found.`,
-          ephemeral: true,
+          flags: 64,
         });
       }
       
@@ -1172,7 +1189,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const message = await interaction.reply({
         embeds: [firstEmbed],
         components: components,
-        ephemeral: true,
+        flags: 64,
       });
       
       // IMPORTANT: For ephemeral messages, we need to store the state using a special key
@@ -1356,7 +1373,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             { name: '🌐 Website', value: '[questhunter.xyz](http://questhunter.xyz/)', inline: true },
             { name: '💻 Source Code', value: '[GitHub](https://github.com/SimpliAj/QuestHunter)', inline: true },
           ],
-          footer: { text: 'Page 1/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          footer: { text: 'Page 1/5 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
           timestamp: new Date().toISOString()
         },
         {
@@ -1370,7 +1387,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             { name: '`/notification-style`', value: 'Choose notification style: default text or rich embed', inline: false },
             { name: '`/remove`', value: 'Remove a notification channel or ping role', inline: false },
           ],
-          footer: { text: 'Page 2/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          footer: { text: 'Page 2/5 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
           timestamp: new Date().toISOString()
         },
         {
@@ -1384,7 +1401,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             { name: '`/share`', value: 'Share a game code or reward from an active quest', inline: false },
             ...(spoofEnabled ? [{ name: '`/spoofguide`', value: 'Get the QuestPhantom auto-complete guide', inline: false }] : []),
           ],
-          footer: { text: 'Page 3/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          footer: { text: 'Page 3/5 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
           timestamp: new Date().toISOString()
         },
         {
@@ -1394,12 +1411,24 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           fields: [
             { name: '`/serverconfig`', value: 'View this server\'s current configuration', inline: false },
             { name: '`/stats`', value: 'View bot statistics (servers, quests tracked, etc.)', inline: false },
-            { name: '`/info`', value: 'Learn how quests work and why you might not see one', inline: false },
             { name: '`/dm-notifications`', value: 'Configure personal DM alerts for new quests', inline: false },
             { name: '`/feedback`', value: 'Submit a bug report or feature request', inline: false },
             { name: '`/help`', value: 'Show this help menu', inline: false },
           ],
-          footer: { text: 'Page 4/4 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          footer: { text: 'Page 4/5 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString()
+        },
+        {
+          color: 0x5865F2,
+          title: '❓ How Quests Work',
+          description: 'QuestHunter detects **all** Discord quests globally — but not every quest is available to everyone.',
+          fields: [
+            { name: '🌍 Region Locked', value: 'Many quests are only available in specific countries or regions. If you see **"You are not eligible for this quest"** when opening a link — it is region locked and not available in your region.', inline: false },
+            { name: '📱 Platform Restrictions', value: 'Some quests require a specific platform (Mobile, Desktop, PlayStation, Xbox, Switch). Make sure you are using the correct platform for the task.', inline: false },
+            { name: '🔔 Why do I see quests I can\'t do?', value: 'This bot notifies about every active quest so that users **in eligible regions** get notified. Quests that show up for you may be completable by other members of this server.', inline: false },
+            { name: '🔍 Where to see your quests', value: 'Open Discord → click the gift icon at the top of your DM list → **Quests** tab. Only quests available in your region will appear there.', inline: false },
+          ],
+          footer: { text: 'Page 5/5 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
           timestamp: new Date().toISOString()
         },
       ];
@@ -1428,268 +1457,52 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       await interaction.reply({
         embeds: [helpPages[0]],
         components: buildHelpComponents(0, helpPages.length),
-        ephemeral: true,
+        flags: 64,
       });
     }
 
     if (interaction.commandName === 'stats') {
-      const totalServers = client.guilds.cache.size;
-      const totalChannels = Array.from(guildSettings.values()).reduce((sum, settings) => sum + (settings.channels?.length || 0), 0);
-
-      // Deduplicate by normalized name only (reward strings may differ between old/new format)
-      const normName = (q) => (q.name || '').replace(/\s+Quest$/i, '').trim();
-      const dedupeByName = (quests) => {
-        const seen = new Set();
-        return quests.filter(q => {
-          const key = normName(q);
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      };
-      const uniqueActive = dedupeByName(Array.from(knownQuests.values()));
-      const activeNames = new Set(uniqueActive.map(normName));
-      const uniqueExpired = dedupeByName(Array.from(expiredQuests.values()).filter(q => !activeNames.has(normName(q))));
-
-      const totalTrackedQuests = uniqueActive.length + uniqueExpired.length;
-      const activeQuests = uniqueActive.length;
-
-      // Calculate available orbs, decorations, and game items from ACTIVE quests only
-      let availableOrbs = 0;
-      let availableDecorations = 0;
-      let availableGameItems = 0;
-      const gameItemsMap = new Map(); // Track unique game items
-
-      for (const quest of uniqueActive) {
-        const rewardLower = quest.reward?.toLowerCase() || '';
-        if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
-          availableDecorations++;
-        } else if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
-          const orbMatch = quest.reward?.match(/(\d+)/);
-          if (orbMatch) {
-            availableOrbs += parseInt(orbMatch[1]);
-          }
-        } else if (quest.reward && !rewardLower.includes('orb')) {
-          // It's a game item (anything that's not orbs or decorations)
-          gameItemsMap.set(quest.reward, (gameItemsMap.get(quest.reward) || 0) + 1);
-          availableGameItems++;
-        }
-      }
-      
-      // Calculate total tracked orbs, decorations, and game items from ALL quests (active + expired)
-      let totalTrackedOrbs = 0;
-      let totalTrackedDecorations = 0;
-      let totalTrackedGameItems = 0;
-      const totalGameItemsMap = new Map();
-      
-      // Count from deduplicated active + expired quests
-      for (const quest of [...uniqueActive, ...uniqueExpired]) {
-        const rewardLower = quest.reward?.toLowerCase() || '';
-        if (rewardLower.includes('decoration') || rewardLower.includes('dekoration')) {
-          totalTrackedDecorations++;
-        } else if (rewardLower.includes('orb') || /\d+\s*(discord)?\s*orb/i.test(quest.reward || '')) {
-          const orbMatch = quest.reward?.match(/(\d+)/);
-          if (orbMatch) {
-            totalTrackedOrbs += parseInt(orbMatch[1]);
-          }
-        } else if (quest.reward && !rewardLower.includes('orb')) {
-          totalGameItemsMap.set(quest.reward, (totalGameItemsMap.get(quest.reward) || 0) + 1);
-          totalTrackedGameItems++;
-        }
-      }
-      
-      const statsEmbed = {
-        color: 0x5865F2,
-        title: '📊 Bot Statistics',
-        description: 'QuestHunter Performance Metrics',
-        fields: [
-          {
-            name: '═══ QUESTS ═══',
-            value: '** **',
-            inline: false
-          },
-          {
-            name: '✨ Active Quests',
-            value: activeQuests.toString(),
-            inline: true
-          },
-          {
-            name: '📚 Tracked Quests',
-            value: totalTrackedQuests.toString(),
-            inline: true
-          },
-          {
-            name: '═══ Available to Earn ═══',
-            value: '** **',
-            inline: false
-          },
-          {
-            name: '<:orbs:1476345614412288040> Orbs',
-            value: availableOrbs.toLocaleString(),
-            inline: true
-          },
-          {
-            name: '🎨 Decorations',
-            value: availableDecorations.toString(),
-            inline: true
-          },
-          {
-            name: '🎮 Game Items',
-            value: availableGameItems.toString(),
-            inline: true
-          },
-          {
-            name: '═══ Total Tracked ═══',
-            value: '** **',
-            inline: false
-          },
-          {
-            name: '<:orbs:1476345614412288040> Orbs',
-            value: totalTrackedOrbs.toLocaleString(),
-            inline: true
-          },
-          {
-            name: '🎨 Decorations',
-            value: totalTrackedDecorations.toString(),
-            inline: true
-          },
-          {
-            name: '🎮 Game Items',
-            value: totalTrackedGameItems.toString(),
-            inline: true
-          }
-        ],
-        footer: {
-          text: `QuestHunter v${BOT_VERSION} • Helping ${totalServers} Servers`,
-          icon_url: 'https://i.imgur.com/yTgBkjM.png'
-        },
-        timestamp: new Date().toISOString()
-      };
-
       await interaction.reply({
-        embeds: [statsEmbed],
-        ephemeral: true,
+        embeds: [buildStatsEmbed()],
+        flags: 64,
       });
     }
 
-    if (interaction.commandName === 'info') {
-      const infoEmbed = {
+    if (interaction.commandName === 'adminpanel') {
+      if (interaction.user.id !== ADMIN_USER_ID) {
+        return await interaction.reply({ content: '❌ Only the bot admin can use this command.', flags: 64 });
+      }
+
+      const totalServers = client.guilds.cache.size;
+      const activeQuestCount = knownQuests.size;
+      const totalChannels = Array.from(guildSettings.values()).reduce((sum, s) => sum + (s.channels?.length || 0), 0);
+
+      const panelEmbed = {
         color: 0x5865F2,
-        title: '❓ How Quests Work',
-        description: 'QuestHunter detects **all** Discord quests globally — but not every quest is available to everyone.',
+        title: '🛠️ QuestHunter Admin Panel',
         fields: [
-          {
-            name: '🌍 Region Locked',
-            value: 'Many quests are only available in specific countries or regions. If a quest was announced here but you see **"You are not eligible for this quest"** when opening the link — it is region locked and not available in your region.',
-            inline: false,
-          },
-          {
-            name: '📱 Platform Restrictions',
-            value: 'Some quests require a specific platform (Mobile, Desktop, PlayStation, Xbox, Switch). Make sure you are using the correct platform for the task.',
-            inline: false,
-          },
-          {
-            name: '🔔 Why do I see quests I can\'t do?',
-            value: 'This bot notifies about every active quest so that users **in eligible regions** get notified. Quests that show up for you may be completable by other members of this server.',
-            inline: false,
-          },
-          {
-            name: '🔍 Where to see your quests',
-            value: 'Open Discord → click the gift icon at the top of your DM list → **Quests** tab. Only quests available in your region will appear there.',
-            inline: false,
-          },
+          { name: '🌐 Servers', value: `${totalServers}`, inline: true },
+          { name: '📋 Active Quests', value: `${activeQuestCount}`, inline: true },
+          { name: '📢 Channels', value: `${totalChannels}`, inline: true },
         ],
-        footer: {
-          text: 'QuestHunter',
-          icon_url: 'https://i.imgur.com/yTgBkjM.png',
-        },
+        footer: { text: 'QuestHunter Admin', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
         timestamp: new Date().toISOString(),
       };
 
-      await interaction.reply({ embeds: [infoEmbed], ephemeral: true });
-    }
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('adminpanel_scan').setLabel('🔍 Run Scan').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('adminpanel_announce').setLabel('📢 Announce').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('adminpanel_questtest').setLabel('🧪 Quest Test').setStyle(ButtonStyle.Secondary),
+      );
 
-    if (interaction.commandName === 'announce') {
-      // Check if user is the admin
-      if (interaction.user.id !== ADMIN_USER_ID) {
-        return await interaction.reply({
-          content: '❌ Only the bot admin can use this command',
-          ephemeral: true,
-        });
-      }
-
-      const title = interaction.options.getString('title');
-      const message = interaction.options.getString('message');
-
-      // Create announcement embed
-      const announcementEmbed = {
-        color: 0x5865F2,
-        title: `📢 ${title}`,
-        description: message,
-        footer: {
-          text: 'QuestHunter Announcement',
-          icon_url: 'https://i.imgur.com/yTgBkjM.png'
-        },
-        timestamp: new Date().toISOString()
-      };
-
-      // Broadcast to all configured channels
-      let broadcastCount = 0;
-      const failedChannels = [];
-
-      for (const [guildId, settings] of guildSettings) {
-        const guildChannels = settings.channels || [];
-
-        if (guildChannels.length > 0) {
-          for (const ch of guildChannels) {
-            try {
-              const channel = await client.channels.fetch(ch.id);
-              if (channel) {
-                await channel.send({ embeds: [announcementEmbed] });
-                broadcastCount++;
-              }
-            } catch (error) {
-              failedChannels.push(ch.id);
-            }
-          }
-        }
-      }
-
-      // Send confirmation
-      const confirmEmbed = {
-        color: broadcastCount > 0 ? 0x00FF00 : 0xFF0000,
-        title: '✅ Announcement Broadcast Complete',
-        description: `Successfully sent announcement to **${broadcastCount}** channel(s)`,
-        fields: [
-          {
-            name: 'Title',
-            value: title,
-            inline: false
-          },
-          {
-            name: 'Message',
-            value: message,
-            inline: false
-          }
-        ],
-        footer: {
-          text: 'QuestHunter Admin',
-          icon_url: 'https://i.imgur.com/yTgBkjM.png'
-        },
-        timestamp: new Date().toISOString()
-      };
-
-      await interaction.reply({
-        embeds: [confirmEmbed],
-        ephemeral: true
-      });
+      await interaction.reply({ embeds: [panelEmbed], components: [row], flags: 64 });
     }
 
     if (interaction.commandName === 'remove') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
         return await interaction.reply({
           content: '❌ You need the Manage Guild permission to use this command',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -1701,7 +1514,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         if (!channelId) {
           return await interaction.reply({
             content: '❌ Please specify a channel to remove',
-            ephemeral: true,
+            flags: 64,
           });
         }
 
@@ -1711,7 +1524,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         if (channelIndex === -1) {
           return await interaction.reply({
             content: `❌ <#${channelId}> is not configured for quest notifications`,
-            ephemeral: true,
+            flags: 64,
           });
         }
 
@@ -1731,13 +1544,13 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
         await interaction.reply({
           embeds: [embed],
-          ephemeral: true,
+          flags: 64,
         });
       } else if (type === 'pingrole') {
         if (!settings?.questPingRoleId) {
           return await interaction.reply({
             content: '❌ No ping role is currently configured',
-            ephemeral: true,
+            flags: 64,
           });
         }
 
@@ -1758,7 +1571,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
         await interaction.reply({
           embeds: [embed],
-          ephemeral: true,
+          flags: 64,
         });
       }
     }
@@ -1771,7 +1584,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (!feedbackWebhook) {
         return await interaction.reply({
           content: '❌ Feedback system is not configured',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -1827,13 +1640,13 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
 
         await interaction.reply({
           embeds: [confirmEmbed],
-          ephemeral: true,
+          flags: 64,
         });
       } catch (error) {
         console.error('❌ Error sending feedback:', error.message);
         await interaction.reply({
           content: '❌ Failed to send feedback. Please try again later.',
-          ephemeral: true,
+          flags: 64,
         });
       }
     }
@@ -1847,7 +1660,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (validationError) {
         return await interaction.reply({
           content: `❌ ${validationError}`,
-          ephemeral: true,
+          flags: 64,
         });
       }
       
@@ -1856,7 +1669,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (!quest) {
         return await interaction.reply({
           content: '❌ Quest not found. Please select a valid quest.',
-          ephemeral: true,
+          flags: 64,
         });
       }
       
@@ -1943,7 +1756,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         
         await interaction.reply({
           embeds: [confirmEmbed],
-          ephemeral: true,
+          flags: 64,
         });
         
         console.log(`✅ Code shared for quest "${questName}" by ${interaction.user.tag}`);
@@ -1951,7 +1764,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         console.error('❌ Error sharing code:', error.message);
         await interaction.reply({
           content: '❌ Failed to share code. Please try again later.',
-          ephemeral: true,
+          flags: 64,
         });
       }
     }
@@ -2005,7 +1818,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           footer: { text: 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
           timestamp: new Date().toISOString()
         }],
-        ephemeral: true,
+        flags: 64,
       });
     }
 
@@ -2013,7 +1826,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
         return await interaction.reply({
           content: '❌ You need the Manage Guild permission to use this command.',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -2034,124 +1847,10 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
           footer: { text: 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
           timestamp: new Date().toISOString(),
         }],
-        ephemeral: true,
+        flags: 64,
       });
     }
 
-    if (interaction.commandName === 'quest-test') {
-      if (interaction.user.id !== ADMIN_USER_ID) {
-        return await interaction.reply({ content: '❌ This command is restricted to the bot admin.', ephemeral: true });
-      }
-
-      await interaction.deferReply({ ephemeral: true });
-
-      const styleOverride = interaction.options.getString('style');
-      const count = interaction.options.getInteger('count') || 1;
-      const style = styleOverride || guildSettings.get(interaction.guildId)?.notificationStyle || 'default';
-
-      // Always fetch fresh from JSON so imageUrl and all fields are populated
-      let questPool = [];
-      try {
-        const axios = require('axios');
-        const QUESTS_JSON_URL = 'https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json';
-        const response = await axios.get(QUESTS_JSON_URL, { timeout: 15000 });
-        const now = new Date();
-        const TASK_LABELS = {
-          WATCH_VIDEO: 'Video', WATCH_VIDEO_ON_DESKTOP: 'Video (Desktop)', WATCH_VIDEO_ON_MOBILE: 'Video (Mobile)',
-          PLAY_ON_DESKTOP: 'Desktop', STREAM_ON_DESKTOP: 'Desktop (Stream)',
-          PLAY_ON_MOBILE: 'Mobile', PLAY_ON_PLAYSTATION: 'PlayStation', PLAY_ON_XBOX: 'Xbox',
-          PLAY_ON_SWITCH: 'Switch', COMPLETE_ACHIEVEMENT: 'Achievement', PLAY_ACTIVITY: 'Activity',
-          ACHIEVEMENT_IN_ACTIVITY: 'Achievement (Activity)',
-        };
-        const cdnUrl = (questId, assetPath) => {
-          if (!assetPath) return null;
-          return assetPath.startsWith('quests/')
-            ? `https://cdn.discordapp.com/${assetPath}`
-            : `https://cdn.discordapp.com/quests/${questId}/${assetPath}`;
-        };
-
-        const maxExpiry = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000);
-
-        questPool = response.data
-          .filter(e => e.config?.starts_at && e.config?.expires_at)
-          .filter(e => {
-            const start = new Date(e.config.starts_at);
-            const expire = new Date(e.config.expires_at);
-            // Active + not a permanent demo quest (expires within 180 days)
-            return start <= now && expire > now && expire <= maxExpiry;
-          })
-          .sort((a, b) => new Date(b.config.starts_at) - new Date(a.config.starts_at))
-          .reduce((acc, e) => {
-            const cfg = e.config;
-            const questName = cfg.messages?.quest_name || 'Unknown';
-
-            // Skip [TEST] quests
-            if (/^\[TEST\]/i.test(questName)) return acc;
-
-            const rewards = cfg.rewards_config?.rewards || cfg.rewards || [];
-            const r = rewards[0];
-            let reward = 'Unknown';
-            if (r?.orb_quantity != null) {
-              const nitro = r.premium_orb_quantity ?? Math.round(r.orb_quantity * 1.2);
-              reward = `${r.orb_quantity} Discord Orbs (Nitro: ${nitro} Orbs)`;
-            } else {
-              const name = r?.messages?.name || r?.name || 'Unknown';
-              const redemption = r?.messages?.redemption_instructions_by_platform?.['0'] || '';
-              const isDecoration = /^(PLACEHOLDER|Default)$/i.test(redemption.trim());
-              reward = isDecoration ? `${name} (Avatar Decoration)` : name;
-            }
-
-            const taskKeys = Object.keys(cfg.task_config_v2?.tasks || cfg.task_config?.tasks || {});
-            const hasSpecificVideo = taskKeys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
-            const tasks = taskKeys
-              .filter(k => !(k === 'WATCH_VIDEO' && hasSpecificVideo))
-              .map(k => TASK_LABELS[k] || k);
-
-            const imageUrl = r?.asset ? cdnUrl(e.id, r.asset) : 'https://i.imgur.com/v2Ra1GP.png';
-
-            // Deduplicate regional variants by name+reward
-            const normalizedName = questName.replace(/\s+Quest$/i, '').trim();
-            const dedupeKey = `${normalizedName}||${reward}`;
-            const existing = acc.find(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim()}||${q.reward}` === dedupeKey);
-            if (existing) {
-              if (!existing.allIds.includes(String(e.id))) existing.allIds.push(String(e.id));
-              return acc;
-            }
-
-            acc.push({
-              id: e.id,
-              allIds: [String(e.id)],
-              name: questName,
-              game: cfg.messages?.game_title || cfg.application?.name || null,
-              reward, tasks, imageUrl,
-              startsAt: cfg.starts_at,
-              expiresAt: cfg.expires_at,
-            });
-            return acc;
-          }, []);
-      } catch (err) {
-        // Fall back to knownQuests if fetch fails
-        console.warn('⚠️  quest-test: JSON fetch failed, using knownQuests:', err.message);
-        questPool = Array.from(knownQuests.values());
-      }
-
-      const selected = questPool.slice(0, count);
-      if (selected.length === 0) {
-        await interaction.editReply({ content: '❌ No quests available to test with.' });
-        return;
-      }
-
-      const channel = interaction.channel;
-      const styleLabel = style === 'embed' ? 'Embed' : 'Default';
-      await channel.send(`🧪 **Quest notification test** — Style: **${styleLabel}** (${selected.length} quest${selected.length > 1 ? 's' : ''})`);
-
-      for (const quest of selected) {
-        const payload = buildQuestPayload(quest, style);
-        await channel.send(payload);
-      }
-
-      await interaction.editReply({ content: `✅ Sent ${selected.length} test notification${selected.length > 1 ? 's' : ''} to <#${channel.id}> using **${styleLabel}** style.` });
-    }
 
     if (interaction.commandName === 'dm-notifications-old') {
       // This is the old button-based handler - kept for backward compatibility with existing buttons
@@ -2162,7 +1861,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (interaction.user.id !== userId) {
         return await interaction.reply({
           content: '❌ Only the user who initiated this command can use these buttons',
-          ephemeral: true,
+          flags: 64,
         });
       }
 
@@ -2215,7 +1914,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           content: '❌ Error processing your request',
-          ephemeral: true,
+          flags: 64,
         });
       }
     } catch (replyError) {
@@ -2606,7 +2305,7 @@ client.on('interactionCreate', async (interaction) => {
       // Send confirmation to user
       await interaction.followUp({
         content: `✅ You claimed the code for **${questName}**!`,
-        ephemeral: true,
+        flags: 64,
       });
 
       console.log(`✅ Code claimed for quest "${questName}" by ${interaction.user.tag}`);
@@ -2688,7 +2387,7 @@ client.on('interactionCreate', async (interaction) => {
 - 👆 **Manually activate quests** in your quest menu first
 - 🔍 Keep the console open while the script runs
 - 📌 Check the full README here: https://github.com/SimpliAj/QuestPhantom/blob/main/README.md`,
-        ephemeral: true,
+        flags: 64,
       });
       return;
     }
@@ -2879,22 +2578,269 @@ client.on('interactionCreate', async (interaction) => {
         embeds: [embed],
         components: components,
       });
-      
+
       return;
     }
-    
+
+    // Admin panel buttons
+    if (interaction.customId === 'adminpanel_scan') {
+      if (interaction.user.id !== ADMIN_USER_ID) return interaction.reply({ content: '❌ Admin only.', flags: 64 });
+      await interaction.deferReply({ flags: 64 });
+      try {
+        const QUESTS_JSON_URL = 'https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json';
+        const response = await axios.get(QUESTS_JSON_URL, { timeout: 15000 });
+        const now = new Date();
+        const maxExpiry = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000);
+        const activeRaw = response.data.filter(e => {
+          if (!e.config?.starts_at || !e.config?.expires_at) return false;
+          const start = new Date(e.config.starts_at);
+          const expire = new Date(e.config.expires_at);
+          const name = e.config?.messages?.quest_name || '';
+          if (/^\[TEST\]/i.test(name)) return false;
+          return start <= now && expire > now && expire <= maxExpiry;
+        });
+        const newIds = activeRaw.filter(e => !knownQuests.has(String(e.id)));
+        const scanEmbed = {
+          color: 0x5865F2,
+          title: '🔍 Scan Results',
+          fields: [
+            { name: '📋 Active in JSON', value: `${activeRaw.length}`, inline: true },
+            { name: '✅ Already tracked', value: `${activeRaw.length - newIds.length}`, inline: true },
+            { name: '🆕 New (not yet tracked)', value: `${newIds.length}`, inline: true },
+          ],
+          description: newIds.length > 0
+            ? newIds.slice(0, 5).map(e => `• ${e.config?.messages?.quest_name || e.id}`).join('\n')
+            : 'No new quests found.',
+          footer: { text: 'QuestHunter Admin — Scan only, no notifications sent', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString(),
+        };
+        await interaction.editReply({ embeds: [scanEmbed] });
+      } catch (err) {
+        await interaction.editReply({ content: `❌ Scan failed: ${err.message}` });
+      }
+      return;
+    }
+
+    if (interaction.customId === 'adminpanel_cleanup') {
+      if (interaction.user.id !== ADMIN_USER_ID) return interaction.reply({ content: '❌ Admin only.', flags: 64 });
+      await interaction.deferReply({ flags: 64 });
+      let deleted = 0, failed = 0;
+      const channelIds = new Set();
+      for (const settings of guildSettings.values()) {
+        for (const ch of (settings.channels || [])) channelIds.add(ch.id);
+        if (settings.expiredChannelId) channelIds.add(settings.expiredChannelId);
+      }
+      for (const channelId of channelIds) {
+        try {
+          const channel = await client.channels.fetch(channelId);
+          if (!channel?.messages) continue;
+          const messages = await channel.messages.fetch({ limit: 100 });
+          const botMessages = messages.filter(m => m.author.id === client.user.id);
+          for (const msg of botMessages.values()) {
+            try { await msg.delete(); deleted++; } catch { failed++; }
+          }
+        } catch { failed++; }
+      }
+      await interaction.editReply({ content: `🗑️ Deleted **${deleted}** bot messages across ${channelIds.size} channels. (${failed} failed)` });
+      return;
+    }
+
+    if (interaction.customId === 'adminpanel_announce') {
+      if (interaction.user.id !== ADMIN_USER_ID) return interaction.reply({ content: '❌ Admin only.', flags: 64 });
+      const modal = new ModalBuilder()
+        .setCustomId('adminpanel_announce_modal')
+        .setTitle('Send Announcement');
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('announce_title').setLabel('Title').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('announce_message').setLabel('Message').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(2000)
+        )
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === 'adminpanel_questtest') {
+      if (interaction.user.id !== ADMIN_USER_ID) return interaction.reply({ content: '❌ Admin only.', flags: 64 });
+      const modal = new ModalBuilder()
+        .setCustomId('adminpanel_questtest_modal')
+        .setTitle('🧪 Quest Test');
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('test_count')
+            .setLabel('How many quests? (1–10, newest first)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('5')
+            .setMinLength(1).setMaxLength(2)
+            .setRequired(true)
+        )
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+
   } catch (error) {
     console.error('❌ Error handling interaction:', error);
     try {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           content: '❌ Error processing your request. Please try again.',
-          ephemeral: true,
+          flags: 64,
         });
       }
     } catch (replyError) {
       console.error('❌ Failed to send error reply:', replyError);
     }
+  }
+});
+
+// Handle modal submissions
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isModalSubmit()) return;
+
+  if (interaction.customId === 'adminpanel_questtest_modal') {
+    if (interaction.user.id !== ADMIN_USER_ID) return interaction.reply({ content: '❌ Admin only.', flags: 64 });
+    await interaction.deferReply({ flags: 64 });
+    try {
+      const countRaw = interaction.fields.getTextInputValue('test_count');
+      const count = Math.min(10, Math.max(1, parseInt(countRaw) || 5));
+
+      const ORBS_IMG = 'https://i.imgur.com/v2Ra1GP.png';
+      const IMG_EXTS = /\.(png|jpg|jpeg|gif|webp)$/i;
+      const cdnUrl = (qid, path) => {
+        if (!path) return null;
+        return path.startsWith('quests/') ? `https://cdn.discordapp.com/${path}` : `https://cdn.discordapp.com/quests/${qid}/${path}`;
+      };
+      const getImg = (qid, cfg) => {
+        const r = (cfg.rewards_config?.rewards || cfg.rewards || [])[0];
+        if (r?.asset && IMG_EXTS.test(r.asset)) return cdnUrl(qid, r.asset);
+        if (r?.orb_quantity != null) return ORBS_IMG;
+        const a = cfg.assets || {};
+        if (a.quest_bar_hero && IMG_EXTS.test(a.quest_bar_hero)) return cdnUrl(qid, a.quest_bar_hero);
+        if (a.hero && IMG_EXTS.test(a.hero)) return cdnUrl(qid, a.hero);
+        return cdnUrl(qid, a.game_tile_light || a.game_tile) || ORBS_IMG;
+      };
+      const TASK_LABELS = {
+        WATCH_VIDEO: 'Video', WATCH_VIDEO_ON_DESKTOP: 'Video (Desktop)', WATCH_VIDEO_ON_MOBILE: 'Video (Mobile)',
+        PLAY_ON_DESKTOP: 'Desktop', STREAM_ON_DESKTOP: 'Desktop (Stream)', PLAY_ON_MOBILE: 'Mobile',
+        PLAY_ON_PLAYSTATION: 'PlayStation', PLAY_ON_XBOX: 'Xbox', PLAY_ON_SWITCH: 'Switch',
+        COMPLETE_ACHIEVEMENT: 'Achievement', PLAY_ACTIVITY: 'Activity', ACHIEVEMENT_IN_ACTIVITY: 'Achievement (Activity)',
+      };
+
+      // Fetch both sources
+      const [apiResp, ghResp] = await Promise.allSettled([
+        axios.get('https://api.discordquest.com/api/quests', { timeout: 15000 }),
+        axios.get('https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json', { timeout: 15000 }),
+      ]);
+      const seen = new Map();
+      for (const res of [apiResp, ghResp]) {
+        if (res.status === 'fulfilled' && Array.isArray(res.value.data)) {
+          for (const q of res.value.data) { if (q.id && !seen.has(String(q.id))) seen.set(String(q.id), q); }
+        }
+      }
+      const now = new Date();
+      const maxExpiry = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000);
+      const pool = [...seen.values()]
+        .filter(e => {
+          const cfg = e.config;
+          if (!cfg?.starts_at || !cfg?.expires_at) return false;
+          const s = new Date(cfg.starts_at), x = new Date(cfg.expires_at);
+          return s <= now && x > now && x <= maxExpiry && !/^\[TEST\]/i.test(cfg.messages?.quest_name || '');
+        })
+        .sort((a, b) => new Date(b.config.starts_at) - new Date(a.config.starts_at))
+        .slice(0, count);
+
+      if (!pool.length) return interaction.editReply({ content: '❌ No active quests found.' });
+
+      const embeds = pool.map(e => {
+        const cfg = e.config;
+        const qid = String(e.id);
+        const rewards = cfg.rewards_config?.rewards || cfg.rewards || [];
+        const r = rewards[0];
+        let reward = 'Unknown';
+        if (r?.orb_quantity != null) {
+          reward = `${r.orb_quantity} Discord Orbs (Nitro: ${r.premium_orb_quantity ?? Math.round(r.orb_quantity * 1.2)} Orbs)`;
+        } else {
+          const name = r?.messages?.name || r?.name || 'Unknown';
+          const redemption = r?.messages?.redemption_instructions_by_platform?.['0'] || '';
+          reward = /^(PLACEHOLDER|Default)$/i.test(redemption.trim()) ? `${name} (Avatar Decoration)` : name;
+        }
+        const taskKeys = Object.keys(cfg.task_config_v2?.tasks || cfg.task_config?.tasks || {});
+        const hasSpecVid = taskKeys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
+        const tasks = taskKeys.filter(k => !(k === 'WATCH_VIDEO' && hasSpecVid)).map(k => TASK_LABELS[k] || k);
+        const imageUrl = getImg(qid, cfg);
+        const game = cfg.messages?.game_title || cfg.application?.name || 'Unknown';
+        const questName = cfg.messages?.quest_name || 'Unknown';
+        const expiresAt = cfg.expires_at;
+        const rel = formatRelative(expiresAt);
+        const abs = formatDate(expiresAt);
+        const expiryText = rel ? `${abs} (${rel})` : (abs || 'Unknown');
+        const fields = [];
+        if (tasks.length > 0) fields.push({ name: '📱 Task', value: tasks.join(' / '), inline: true });
+        fields.push({ name: '⏰ Expires', value: expiryText, inline: true });
+        const embed = {
+          color: 0x5865F2,
+          author: game ? { name: `🎮 ${game}` } : undefined,
+          title: `🧪 [TEST] ${questName}`,
+          url: `https://discord.com/quests/${qid}`,
+          description: `🏆 ${reward}`,
+          fields,
+          footer: { text: `QuestHunter • Test • ID: ${qid}`, icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+          timestamp: new Date().toISOString(),
+        };
+        if (imageUrl) embed.thumbnail = { url: imageUrl };
+        return embed;
+      });
+
+      await interaction.editReply({ content: `Showing **${embeds.length}** quest(s):`, embeds });
+    } catch (err) {
+      await interaction.editReply({ content: `❌ Quest test failed: ${err.message}` });
+    }
+    return;
+  }
+
+  if (interaction.customId === 'adminpanel_announce_modal') {
+    if (interaction.user.id !== ADMIN_USER_ID) return interaction.reply({ content: '❌ Admin only.', flags: 64 });
+    await interaction.deferReply({ flags: 64 });
+
+    const title = interaction.fields.getTextInputValue('announce_title');
+    const message = interaction.fields.getTextInputValue('announce_message');
+
+    const announcementEmbed = {
+      color: 0x5865F2,
+      title: `📢 ${title}`,
+      description: message,
+      footer: { text: 'QuestHunter Announcement', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+      timestamp: new Date().toISOString(),
+    };
+
+    let broadcastCount = 0;
+    const failedChannels = [];
+    for (const [guildId, settings] of guildSettings) {
+      for (const ch of (settings.channels || [])) {
+        try {
+          const channel = await client.channels.fetch(ch.id);
+          if (channel) { await channel.send({ embeds: [announcementEmbed] }); broadcastCount++; }
+        } catch { failedChannels.push(ch.id); }
+      }
+    }
+
+    await interaction.editReply({
+      embeds: [{
+        color: broadcastCount > 0 ? 0x00FF00 : 0xFF0000,
+        title: '✅ Announcement Sent',
+        fields: [
+          { name: 'Title', value: title, inline: false },
+          { name: 'Sent to', value: `${broadcastCount} channel(s)`, inline: true },
+          { name: 'Failed', value: `${failedChannels.length}`, inline: true },
+        ],
+        footer: { text: 'QuestHunter Admin', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+        timestamp: new Date().toISOString(),
+      }]
+    });
   }
 });
 

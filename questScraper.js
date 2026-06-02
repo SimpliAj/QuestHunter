@@ -2,10 +2,13 @@ const axios = require('axios');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+const os = require('os');
 
 dotenv.config();
 
 const QUESTS_JSON_URL = 'https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json';
+const QUESTS_API_URL = 'https://api.discordquest.com/api/quests';
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://localhost:3001/webhook/quests';
 const ERROR_WEBHOOK = process.env.ERROR_WEBHOOK;
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
@@ -13,6 +16,57 @@ const SCAN_INTERVAL = parseInt(process.env.SCRAPER_INTERVAL) || 1800000; // 30 m
 
 const NOTIFIED_QUESTS_FILE = path.join(__dirname, 'data', 'notified_quests.json');
 const LAST_SCAN_FILE = path.join(__dirname, 'data', 'last_scan.json');
+const GIF_CACHE_FILE = path.join(__dirname, 'data', 'gif_cache.json');
+
+// GIF cache: questId -> Discord CDN URL
+let gifCache = {};
+try {
+  if (fs.existsSync(GIF_CACHE_FILE)) gifCache = JSON.parse(fs.readFileSync(GIF_CACHE_FILE, 'utf8'));
+} catch (e) {}
+
+function saveGifCache() {
+  try { fs.writeFileSync(GIF_CACHE_FILE, JSON.stringify(gifCache, null, 2)); } catch (e) {}
+}
+
+const GIF_SERVE_DIR = process.env.GIF_SERVE_DIR || path.join(__dirname, 'public', 'gifs');
+const GIF_SERVE_URL = process.env.GIF_SERVE_URL || null;
+
+async function convertMp4ToGif(mp4Url, cacheKey) {
+  if (gifCache[cacheKey]) return gifCache[cacheKey];
+  if (!GIF_SERVE_URL) return null;
+
+  const tmpMp4 = path.join(os.tmpdir(), `tdm_${cacheKey}.mp4`);
+  const outGif = path.join(GIF_SERVE_DIR, `${cacheKey}.gif`);
+
+  try {
+    fs.mkdirSync(GIF_SERVE_DIR, { recursive: true });
+
+    // Download MP4
+    const resp = await axios.get(mp4Url, { responseType: 'arraybuffer', timeout: 30000 });
+    fs.writeFileSync(tmpMp4, Buffer.from(resp.data));
+
+    // Convert to GIF via ffmpeg: 15fps, 320px wide, loop forever
+    await new Promise((resolve, reject) => {
+      execFile('ffmpeg', [
+        '-y', '-i', tmpMp4,
+        '-vf', 'fps=15,scale=320:-1:flags=lanczos',
+        '-loop', '0',
+        outGif
+      ], { timeout: 30000 }, (err) => err ? reject(err) : resolve());
+    });
+
+    const url = `${GIF_SERVE_URL}/${cacheKey}.gif`;
+    gifCache[cacheKey] = url;
+    saveGifCache();
+    console.log(`  🎞️  GIF converted & served at ${url}`);
+    return url;
+  } catch (e) {
+    console.warn(`  ⚠️  GIF conversion failed for ${cacheKey}: ${e.message}`);
+  } finally {
+    try { fs.unlinkSync(tmpMp4); } catch {}
+  }
+  return null;
+}
 
 const TASK_LABELS = {
   WATCH_VIDEO: 'Video',
@@ -99,7 +153,7 @@ function parseReward(config) {
   // Discord Orbs
   if (reward.orb_quantity != null) {
     const base = reward.orb_quantity;
-    const nitro = reward.premium_orb_quantity ?? Math.round(base * 1.2);
+    const nitro = reward.premium_orb_quantity ?? Math.round(base * 1.2); // API now provides exact value
     return `${base} Discord Orbs (Nitro: ${nitro} Orbs)`;
   }
 
@@ -135,13 +189,41 @@ function buildCdnUrl(questId, assetPath) {
 const ORBS_GIF = 'https://i.imgur.com/v2Ra1GP.png';
 //const ORBS_GIF = 'https://cdn3.emoji.gg/emojis/44565-orbs-animated.gif';
 
-function getImageUrl(questId, config) {
+const IMAGE_EXTS = /\.(png|jpg|jpeg|gif|webp)$/i;
+
+async function getImageUrl(questId, config) {
   const rewards = config.rewards_config?.rewards || config.rewards || [];
   const r = rewards[0];
 
-  // Reward asset if present (mp4/webm included), otherwise Orbs GIF
-  if (r?.asset) return buildCdnUrl(questId, r.asset);
+  // 1. Reward asset — static image → use directly
+  if (r?.asset && IMAGE_EXTS.test(r.asset)) return buildCdnUrl(questId, r.asset);
+
+  // 2. Reward asset is MP4 → convert to GIF (cached)
+  if (r?.asset && /\.mp4$/i.test(r.asset)) {
+    const mp4Url = buildCdnUrl(questId, r.asset);
+    const gifUrl = await convertMp4ToGif(mp4Url, `${questId}_reward`);
+    if (gifUrl) return gifUrl;
+    // Fall through to static fallback if conversion fails
+  }
+
+  // 3. Orbs reward → Orbs image
+  if (r?.orb_quantity != null) return ORBS_GIF;
+
+  // 4. Static fallback from assets
+  const assets = config.assets || {};
+  if (assets.quest_bar_hero && IMAGE_EXTS.test(assets.quest_bar_hero)) return buildCdnUrl(questId, assets.quest_bar_hero);
+  if (assets.hero && IMAGE_EXTS.test(assets.hero)) return buildCdnUrl(questId, assets.hero);
+  if (assets.game_tile_light) return buildCdnUrl(questId, assets.game_tile_light);
+  if (assets.game_tile) return buildCdnUrl(questId, assets.game_tile);
+
   return ORBS_GIF;
+}
+
+function getGameLogoUrl(questId, config) {
+  const assets = config.assets || {};
+  if (assets.logotype_light) return buildCdnUrl(questId, assets.logotype_light);
+  if (assets.logotype) return buildCdnUrl(questId, assets.logotype);
+  return null;
 }
 
 function detectLanguageCode(name) {
@@ -162,7 +244,7 @@ function detectLanguageCode(name) {
   return null; // unknown — caller uses fallback label
 }
 
-function parseActiveQuests(allQuests) {
+async function parseActiveQuests(allQuests) {
   const now = new Date();
   // Sort newest starts_at first so real/recent quests take priority over permanent demo quests
   const sorted = [...allQuests].sort((a, b) =>
@@ -239,7 +321,10 @@ function parseActiveQuests(allQuests) {
     }
 
     const tasks = parseTasks(config);
-    const imageUrl = getImageUrl(entry.id, config);
+    const imageUrl = await getImageUrl(entry.id, config);
+    const gameLogo = getGameLogoUrl(entry.id, config);
+    const publisher = config.messages?.game_publisher || null;
+    const ctaLink = config.cta_config?.link || config.application?.link || null;
 
     const idx = active.length;
     seenKeys.set(dedupeKey, idx);
@@ -250,9 +335,12 @@ function parseActiveQuests(allQuests) {
       allLinks: [{ id: String(entry.id), flag: code }],
       name,
       game,
+      publisher,
       reward,
       tasks,
       imageUrl,
+      gameLogo,
+      ctaLink,
       startsAt: config.starts_at,
       expiresAt: config.expires_at,
       detectedAt: new Date().toLocaleString(),
@@ -281,20 +369,46 @@ async function sendQuestsToBot(quests) {
   }
 }
 
-async function fetchQuests() {
-  console.log('🔍 Fetching quests from JSON feed...');
+async function fetchFromSource(url, label) {
   try {
-    const response = await axios.get(QUESTS_JSON_URL, { timeout: 15000 });
-    const allQuests = response.data;
+    const response = await axios.get(url, { timeout: 15000 });
+    const data = response.data;
+    if (!Array.isArray(data)) throw new Error('Expected JSON array');
+    console.log(`📦 [${label}] ${data.length} quests loaded`);
+    return data;
+  } catch (e) {
+    console.warn(`⚠️  [${label}] Failed: ${e.message}`);
+    return [];
+  }
+}
 
-    if (!Array.isArray(allQuests)) {
-      throw new Error('Unexpected response format - expected JSON array');
+async function fetchQuests() {
+  console.log('🔍 Fetching quests from all sources...');
+  try {
+    // Fetch from both sources in parallel
+    const [apiQuests, githubQuests] = await Promise.all([
+      fetchFromSource(QUESTS_API_URL, 'discordquest.com'),
+      fetchFromSource(QUESTS_JSON_URL, 'github'),
+    ]);
+
+    // Merge: API entries take priority, GitHub fills gaps
+    const seen = new Map();
+    for (const q of apiQuests) {
+      if (q.id) seen.set(String(q.id), q);
+    }
+    for (const q of githubQuests) {
+      if (q.id && !seen.has(String(q.id))) seen.set(String(q.id), q);
+    }
+    const allQuests = [...seen.values()];
+
+    if (allQuests.length === 0) {
+      throw new Error('Both sources returned no data');
     }
 
-    console.log(`📦 Loaded ${allQuests.length} total quests from feed`);
+    console.log(`📊 ${allQuests.length} total unique quests (${apiQuests.length} from API, ${githubQuests.length} from GitHub)`);
 
-    const activeQuests = parseActiveQuests(allQuests);
-    console.log(`📊 ${activeQuests.length} currently active quest(s)`);
+    const activeQuests = await parseActiveQuests(allQuests);
+    console.log(`✅ ${activeQuests.length} currently active quest(s)`);
 
     if (activeQuests.length === 0) {
       console.log('⚠️  No active quests found');
@@ -327,8 +441,9 @@ async function fetchQuests() {
 }
 
 async function start() {
-  console.log('🚀 Discord Quest Scraper Started (JSON feed mode)');
-  console.log(`🔗 Feed URL: ${QUESTS_JSON_URL}`);
+  console.log('🚀 Discord Quest Scraper Started (dual-source mode)');
+  console.log(`🔗 Primary: ${QUESTS_API_URL}`);
+  console.log(`🔗 Fallback: ${QUESTS_JSON_URL}`);
   console.log(`🔗 Bot webhook: ${WEBHOOK_URL}`);
   console.log(`⏱️  Scanning every ${SCAN_INTERVAL / 1000}s`);
   console.log('---');
