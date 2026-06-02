@@ -45,14 +45,14 @@ async function convertMp4ToGif(mp4Url, cacheKey) {
     const resp = await axios.get(mp4Url, { responseType: 'arraybuffer', timeout: 30000 });
     fs.writeFileSync(tmpMp4, Buffer.from(resp.data));
 
-    // Convert to GIF via ffmpeg: 15fps, 320px wide, loop forever
+    // High-quality GIF: palettegen for full 256-color palette, 24fps, 400px
     await new Promise((resolve, reject) => {
       execFile('ffmpeg', [
         '-y', '-i', tmpMp4,
-        '-vf', 'fps=15,scale=320:-1:flags=lanczos',
-        '-loop', '0',
+        '-filter_complex',
+        '[0:v] fps=24,scale=400:-1:flags=lanczos,split [a][b];[a] palettegen=max_colors=256:stats_mode=single [p];[b][p] paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle',
         outGif
-      ], { timeout: 30000 }, (err) => err ? reject(err) : resolve());
+      ], { timeout: 60000 }, (err) => err ? reject(err) : resolve());
     });
 
     const url = `${GIF_SERVE_URL}/${cacheKey}.gif`;
@@ -344,7 +344,7 @@ async function parseActiveQuests(allQuests) {
       startsAt: config.starts_at,
       expiresAt: config.expires_at,
       detectedAt: new Date().toLocaleString(),
-      isNew: !notifiedQuestIds.has(entry.id),
+      isNew: !notifiedQuestIds.has(String(entry.id)),
       _isEnglishLink: isEnglishLink,
     });
   }
@@ -428,7 +428,10 @@ async function fetchQuests() {
       console.log(`✓ No new quests (${activeQuests.length} active)`);
     }
 
-    for (const q of activeQuests) notifiedQuestIds.add(q.id);
+    for (const q of activeQuests) {
+      notifiedQuestIds.add(String(q.id));
+      for (const id of (q.allIds || [])) notifiedQuestIds.add(String(id));
+    }
     saveNotifiedQuestIds(notifiedQuestIds);
 
     await sendQuestsToBot(activeQuests);
