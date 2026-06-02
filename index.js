@@ -3001,23 +3001,26 @@ app.post('/webhook/quests', async (req, res) => {
     let newQuestCount = 0;
     for (const quest of quests) {
       // Check if this is a truly new quest (not previously notified)
-      // Check by ID first, then by name+reward to catch regional duplicate IDs for the same quest
-      const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim()}||${quest.reward || ''}`;
-      // Only check active knownQuests for name dedup — expired quests can return with a new ID
-      // and should trigger a fresh notification (e.g. recurring quests that Discord re-issues)
+      // 1. Check primary ID
+      const knownById = knownQuests.has(quest.id);
+      // 2. Check all allIds (language variants may have different primary IDs)
+      const allIds = quest.allIds?.map(String) || [String(quest.id)];
+      const knownByAllIds = allIds.some(id => knownQuests.has(id));
+      // 3. Case-insensitive name+reward dedup
+      const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(quest.reward || '').toLowerCase()}`;
       const isDuplicateByName = [...knownQuests.values()]
-        .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim()}||${q.reward || ''}` === normalizedKey);
-      // Language variants have different names but same reward + expiry (e.g. Odyssey trailer in 13 languages)
+        .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey);
+      // 4. Same reward + same expiry (language variants)
       const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && [...knownQuests.values()]
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt));
-      const isNew = !knownQuests.has(quest.id) && !isDuplicateByName && !isDuplicateByRewardExpiry;
+      const isNew = !knownById && !knownByAllIds && !isDuplicateByName && !isDuplicateByRewardExpiry;
       
       if (isNew) {
         newQuestCount++;
         console.log(`  🆕 NEW: ${quest.name} (${quest.reward}, Expires: ${quest.expiresAt})`);
 
         // Mark as known IMMEDIATELY to prevent double-sends from concurrent webhook calls
-        knownQuests.set(quest.id, {
+        const questEntry = {
           id: quest.id,
           name: quest.name,
           game: quest.game || null,
@@ -3028,10 +3031,13 @@ app.post('/webhook/quests', async (req, res) => {
           startsAt: quest.startsAt || null,
           expiresAt: quest.expiresAt,
           detectedAt: quest.detectedAt || new Date().toLocaleString(),
-          allIds: quest.allIds?.length > 0 ? quest.allIds.map(String) : [quest.id],
+          allIds: quest.allIds?.length > 0 ? quest.allIds.map(String) : [String(quest.id)],
           allLinks: quest.allLinks || [],
           guildMessages: [],
-        });
+        };
+        // Register under primary ID and all variant IDs so any future ID hit returns known
+        knownQuests.set(String(quest.id), questEntry);
+        for (const vid of questEntry.allIds) knownQuests.set(vid, questEntry);
 
         // Only send notifications if bot is fully ready
         if (botReady) {
