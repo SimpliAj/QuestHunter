@@ -3016,17 +3016,18 @@ app.post('/webhook/quests', async (req, res) => {
     let newQuestCount = 0;
     for (const quest of quests) {
       // Check if this is a truly new quest (not previously notified)
-      // 1. Check primary ID
-      const knownById = knownQuests.has(quest.id);
-      // 2. Check all allIds (language variants may have different primary IDs)
+      // 1. Check primary ID (active + expired)
+      const knownById = knownQuests.has(quest.id) || expiredQuests.has(String(quest.id));
+      // 2. Check all allIds (language variants)
       const allIds = quest.allIds?.map(String) || [String(quest.id)];
-      const knownByAllIds = allIds.some(id => knownQuests.has(id));
-      // 3. Case-insensitive name+reward dedup
+      const knownByAllIds = allIds.some(id => knownQuests.has(id) || expiredQuests.has(id));
+      // 3. Case-insensitive name+reward dedup (active quests)
       const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(quest.reward || '').toLowerCase()}`;
-      const isDuplicateByName = [...knownQuests.values()]
+      const allKnown = [...knownQuests.values(), ...expiredQuests.values()];
+      const isDuplicateByName = allKnown
         .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey);
-      // 4. Same reward + same expiry (language variants)
-      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && [...knownQuests.values()]
+      // 4. Same reward + same expiry (catches language variants)
+      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && allKnown
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt));
       const isNew = !knownById && !knownByAllIds && !isDuplicateByName && !isDuplicateByRewardExpiry;
       
