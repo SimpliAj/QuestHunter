@@ -25,6 +25,7 @@ const client = new Client({
 const DATA_DIR = path.join(__dirname, 'data');
 const QUESTS_FILE = path.join(DATA_DIR, 'known_quests.json');
 const EXPIRED_QUESTS_FILE = path.join(DATA_DIR, 'expired_quests.json');
+const EVER_SENT_FILE = path.join(DATA_DIR, 'ever_sent_ids.json');
 const GUILDS_FILE = path.join(DATA_DIR, 'guild_settings.json');
 const USER_PREFS_FILE = path.join(DATA_DIR, 'user_preferences.json');
 const SHARED_CODES_FILE = path.join(DATA_DIR, 'shared_codes.json');
@@ -42,6 +43,17 @@ if (!fs.existsSync(DATA_DIR)) {
 // Track known quests to detect new ones
 let knownQuests = new Map();
 let expiredQuests = new Map();
+// Append-only set of every quest ID ever notified — final safeguard against re-notification
+let everSentIds = new Set();
+try {
+  if (fs.existsSync(EVER_SENT_FILE)) {
+    const ids = JSON.parse(fs.readFileSync(EVER_SENT_FILE, 'utf8'));
+    everSentIds = new Set(ids.map(String));
+  }
+} catch (e) {}
+function saveEverSentIds() {
+  try { fs.writeFileSync(EVER_SENT_FILE, JSON.stringify([...everSentIds]), 'utf8'); } catch (e) {}
+}
 let guildSettings = new Map(); // { guildId: { channelId: '...' } }
 let userPreferences = new Map(); // { userId: { dmNotifications: boolean } }
 let scanInterval;
@@ -3016,10 +3028,13 @@ app.post('/webhook/quests', async (req, res) => {
     let newQuestCount = 0;
     for (const quest of quests) {
       // Check if this is a truly new quest (not previously notified)
+      // 0. Append-only safeguard — if any ID was ever sent, never re-notify
+      const allIds = quest.allIds?.map(String) || [String(quest.id)];
+      const everSent = everSentIds.has(String(quest.id)) || allIds.some(id => everSentIds.has(id));
+      if (everSent) { continue; }
       // 1. Check primary ID (active + expired)
       const knownById = knownQuests.has(quest.id) || expiredQuests.has(String(quest.id));
       // 2. Check all allIds (language variants)
-      const allIds = quest.allIds?.map(String) || [String(quest.id)];
       const knownByAllIds = allIds.some(id => knownQuests.has(id) || expiredQuests.has(id));
       // 3. Case-insensitive name+reward dedup (active quests)
       const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(quest.reward || '').toLowerCase()}`;
@@ -3053,6 +3068,9 @@ app.post('/webhook/quests', async (req, res) => {
         };
         // Register under primary ID only — allIds checked separately in the isNew logic
         knownQuests.set(String(quest.id), questEntry);
+        // Append-only safeguard: record ALL IDs so this quest can never be re-sent
+        for (const id of questEntry.allIds) everSentIds.add(id);
+        saveEverSentIds();
 
         // Only send notifications if bot is fully ready
         if (botReady) {
