@@ -428,13 +428,14 @@ async function fetchQuests() {
       console.log(`✓ No new quests (${activeQuests.length} active)`);
     }
 
+    await sendQuestsToBot(activeQuests);
+
+    // Only mark as notified AFTER successful send to bot
     for (const q of activeQuests) {
       notifiedQuestIds.add(String(q.id));
       for (const id of (q.allIds || [])) notifiedQuestIds.add(String(id));
     }
     saveNotifiedQuestIds(notifiedQuestIds);
-
-    await sendQuestsToBot(activeQuests);
     saveLastScanTime();
 
   } catch (error) {

@@ -3036,11 +3036,13 @@ app.post('/webhook/quests', async (req, res) => {
       const knownById = knownQuests.has(quest.id) || expiredQuests.has(String(quest.id));
       // 2. Check all allIds (language variants)
       const knownByAllIds = allIds.some(id => knownQuests.has(id) || expiredQuests.has(id));
-      // 3. Case-insensitive name+reward dedup (active quests)
+      // 3. Case-insensitive name+reward dedup — only match if expiresAt also matches
+      // (prevents blocking a new campaign with same name as a past expired campaign)
       const normalizedKey = `${(quest.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(quest.reward || '').toLowerCase()}`;
       const allKnown = [...knownQuests.values(), ...expiredQuests.values()];
       const isDuplicateByName = allKnown
-        .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey);
+        .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey
+          && q.expiresAt === quest.expiresAt);
       // 4. Same reward + same expiry (catches language variants)
       const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && allKnown
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt));
