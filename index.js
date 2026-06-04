@@ -514,28 +514,7 @@ async function registerSlashCommands() {
       ],
       default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
     },
-    {
-      name: 'feedback',
-      description: 'Submit a bug report or feature request',
-      options: [
-        {
-          name: 'type',
-          description: 'Type of feedback',
-          type: 3, // STRING type
-          required: true,
-          choices: [
-            { name: '🐛 Bug Report', value: 'bug' },
-            { name: '💡 Feature Request', value: 'feature' },
-          ],
-        },
-        {
-          name: 'message',
-          description: 'Your feedback message',
-          type: 3, // STRING type
-          required: true,
-        },
-      ],
-    },
+    // feedback command removed
     {
       name: 'dm-notifications',
       description: 'Configure DM notifications for new quests',
@@ -1424,7 +1403,6 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
             { name: '`/serverconfig`', value: 'View this server\'s current configuration', inline: false },
             { name: '`/stats`', value: 'View bot statistics (servers, quests tracked, etc.)', inline: false },
             { name: '`/dm-notifications`', value: 'Configure personal DM alerts for new quests', inline: false },
-            { name: '`/feedback`', value: 'Submit a bug report or feature request', inline: false },
             { name: '`/help`', value: 'Show this help menu', inline: false },
           ],
           footer: { text: 'Page 4/5 • QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
@@ -1588,80 +1566,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       }
     }
 
-    if (interaction.commandName === 'feedback') {
-      const type = interaction.options.getString('type');
-      const message = interaction.options.getString('message');
-      const feedbackWebhook = process.env.FEEDBACK_WEBHOOK;
-
-      if (!feedbackWebhook) {
-        return await interaction.reply({
-          content: '❌ Feedback system is not configured',
-          flags: 64,
-        });
-      }
-
-      try {
-        const typeEmoji = type === 'bug' ? '🐛' : '💡';
-        const typeText = type === 'bug' ? 'Bug Report' : 'Feature Request';
-        
-        const embed = {
-          color: type === 'bug' ? 0xFF0000 : 0x00FF00,
-          title: `${typeEmoji} ${typeText}`,
-          description: message,
-          fields: [
-            {
-              name: 'User',
-              value: `${interaction.user.username}#${interaction.user.discriminator}`,
-              inline: true
-            },
-            {
-              name: 'User ID',
-              value: interaction.user.id,
-              inline: true
-            },
-            {
-              name: 'Server',
-              value: interaction.guild?.name || 'DM',
-              inline: true
-            }
-          ],
-          footer: {
-            text: 'QuestHunter Feedback',
-            icon_url: 'https://i.imgur.com/yTgBkjM.png'
-          },
-          timestamp: new Date().toISOString()
-        };
-
-        // Send to webhook
-        await axios.post(feedbackWebhook, {
-          username: 'Feedback',
-          avatar_url: client.user.displayAvatarURL(),
-          embeds: [embed]
-        });
-
-        const confirmEmbed = {
-          color: 0x5865F2,
-          title: '✅ Feedback Sent',
-          description: `Thank you for your ${typeText.toLowerCase()}! We appreciate your input.`,
-          footer: {
-            text: 'QuestHunter',
-            icon_url: 'https://i.imgur.com/yTgBkjM.png'
-          },
-          timestamp: new Date().toISOString()
-        };
-
-        await interaction.reply({
-          embeds: [confirmEmbed],
-          flags: 64,
-        });
-      } catch (error) {
-        console.error('❌ Error sending feedback:', error.message);
-        await interaction.reply({
-          content: '❌ Failed to send feedback. Please try again later.',
-          flags: 64,
-        });
-      }
-    }
+    // feedback command removed
 
     if (interaction.commandName === 'share') {
       const questId = interaction.options.getString('quest');
@@ -2611,7 +2516,7 @@ client.on('interactionCreate', async (interaction) => {
           if (/^\[TEST\]/i.test(name)) return false;
           return start <= now && expire > now && expire <= maxExpiry;
         });
-        const newIds = activeRaw.filter(e => !knownQuests.has(String(e.id)));
+        const newIds = activeRaw.filter(e => !everSentIds.has(String(e.id)));
         const scanEmbed = {
           color: 0x5865F2,
           title: '🔍 Scan Results',
@@ -2906,12 +2811,15 @@ process.on('SIGINT', () => {
 app.post('/webhook/quests', async (req, res) => {
   try {
     const { quests } = req.body;
-    
+
     if (!quests || quests.length === 0) {
       return res.status(400).json({ error: 'No quests provided' });
     }
-    
+
     console.log(`\n📥 Received ${quests.length} quest(s) from scraper`);
+
+    // Respond immediately so scraper doesn't time out
+    res.status(200).json({ success: true, received: quests.length });
     
     // Skip processing if bot is still starting up
     if (!botReady) {
@@ -3068,6 +2976,20 @@ app.post('/webhook/quests', async (req, res) => {
           allLinks: quest.allLinks || [],
           guildMessages: [],
         };
+        // If any allId is already a primary key, merge into that entry instead of creating a duplicate
+        const conflictingPrimaryId = questEntry.allIds.find(id => id !== String(quest.id) && knownQuests.has(id));
+        if (conflictingPrimaryId) {
+          const existing = knownQuests.get(conflictingPrimaryId);
+          const mergedAllIds = [...new Set([...(existing.allIds || [conflictingPrimaryId]), ...questEntry.allIds])];
+          knownQuests.set(conflictingPrimaryId, { ...existing, allIds: mergedAllIds });
+          for (const id of mergedAllIds) everSentIds.add(id);
+          saveEverSentIds();
+          saveData();
+          console.log(`  🔗 Merged duplicate primary ${quest.id} into existing ${conflictingPrimaryId}`);
+          newQuestCount--;
+          continue;
+        }
+
         // Register under primary ID only — allIds checked separately in the isNew logic
         knownQuests.set(String(quest.id), questEntry);
         // Append-only safeguard: record ALL IDs so this quest can never be re-sent
@@ -3216,18 +3138,9 @@ app.post('/webhook/quests', async (req, res) => {
     console.log(`✅ Processed ${quests.length} quests (${newQuestCount} new, ${expiredQuestsList.length} expired)`);
     console.log(`📊 Active quests in memory: ${knownQuests.size}`);
     console.log(`📊 Expired quests in memory: ${expiredQuests.size}\n`);
-    
-    res.status(200).json({ 
-      success: true, 
-      processed: quests.length, 
-      newQuests: newQuestCount,
-      expiredQuests: expiredQuests.length,
-      totalTracked: knownQuests.size
-    });
-    
+
   } catch (error) {
-    console.error('❌ Webhook error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Webhook processing error:', error);
   }
 });
 
