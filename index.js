@@ -1865,7 +1865,7 @@ function buildQuestPayload(questData, style, pingContent = '') {
       url: questLink,
       description: `🏆 ${questData.reward || 'Unknown'}`,
       fields,
-      footer: { text: 'QuestHunter • Region locks may not be enforced globally', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
+      footer: { text: questData.regions?.length > 0 ? 'QuestHunter • Region locks may not be enforced globally' : 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
       timestamp: new Date().toISOString(),
     };
     if (questData.imageUrl) embed.thumbnail = { url: questData.imageUrl };
@@ -2691,28 +2691,17 @@ client.on('interactionCreate', async (interaction) => {
         const taskKeys = Object.keys(cfg.task_config_v2?.tasks || cfg.task_config?.tasks || {});
         const hasSpecVid = taskKeys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
         const tasks = taskKeys.filter(k => !(k === 'WATCH_VIDEO' && hasSpecVid)).map(k => TASK_LABELS[k] || k);
-        const imageUrl = getImg(qid, cfg);
-        const game = cfg.application?.name || cfg.messages?.game_title || 'Unknown';
-        const questName = cfg.messages?.quest_name || 'Unknown';
-        const expiresAt = cfg.expires_at;
-        const rel = formatRelative(expiresAt);
-        const abs = formatDate(expiresAt);
-        const expiryText = rel ? `${abs} (${rel})` : (abs || 'Unknown');
-        const fields = [];
-        if (tasks.length > 0) fields.push({ name: '📱 Task', value: tasks.join(' / '), inline: true });
-        fields.push({ name: '⏰ Expires', value: expiryText, inline: true });
-        const embed = {
-          color: 0x5865F2,
-          author: game ? { name: `🎮 ${game}` } : undefined,
-          title: `🧪 [TEST] ${questName}`,
-          url: `https://discord.com/quests/${qid}`,
-          description: `🏆 ${reward}`,
-          fields,
-          footer: { text: `QuestHunter • Test • ID: ${qid}`, icon_url: 'https://i.imgur.com/yTgBkjM.png' },
-          timestamp: new Date().toISOString(),
+        const questData = {
+          id: qid,
+          name: cfg.messages?.quest_name || 'Unknown',
+          game: cfg.application?.name || cfg.messages?.game_title || 'Unknown',
+          reward,
+          tasks,
+          imageUrl: getImg(qid, cfg),
+          expiresAt: cfg.expires_at,
+          regions: Array.isArray(cfg.regions) && cfg.regions.length > 0 ? cfg.regions : null,
         };
-        if (imageUrl) embed.thumbnail = { url: imageUrl };
-        return embed;
+        return buildQuestPayload(questData, 'embed').embeds[0];
       });
 
       await interaction.editReply({ content: `Showing **${embeds.length}** quest(s):`, embeds });
@@ -2954,11 +2943,11 @@ app.post('/webhook/quests', async (req, res) => {
       const isDuplicateByName = allKnown
         .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey
           && q.expiresAt === quest.expiresAt);
-      // 4. Same reward + same expiry (catches language variants) — only vs ACTIVE quests
-      // (expired quests coincidentally sharing reward+expiry should not block new quests)
+      // 4. Same reward + same expiry + same game (catches language variants) — only vs ACTIVE quests
+      // Must also match game to avoid false positives when different quests share reward+expiry
       const activeKnown = [...knownQuests.values()];
-      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && activeKnown
-        .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt));
+      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && quest.game && activeKnown
+        .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt && q.game === quest.game));
       const isNew = !knownById && !knownByAllIds && !isDuplicateByName && !isDuplicateByRewardExpiry;
       
       if (isNew) {
