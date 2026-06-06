@@ -1854,6 +1854,9 @@ function buildQuestPayload(questData, style, pingContent = '') {
       fields.push({ name: '📱 Task', value: questData.tasks.join(' / '), inline: true });
     }
     fields.push({ name: '⏰ Expires', value: expiryText, inline: true });
+    if (questData.regions?.length > 0) {
+      fields.push({ name: '🌍 Regions', value: questData.regions.join(', '), inline: true });
+    }
 
     const embed = {
       color: 0x5865F2,
@@ -2951,8 +2954,10 @@ app.post('/webhook/quests', async (req, res) => {
       const isDuplicateByName = allKnown
         .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey
           && q.expiresAt === quest.expiresAt);
-      // 4. Same reward + same expiry (catches language variants)
-      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && allKnown
+      // 4. Same reward + same expiry (catches language variants) — only vs ACTIVE quests
+      // (expired quests coincidentally sharing reward+expiry should not block new quests)
+      const activeKnown = [...knownQuests.values()];
+      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && activeKnown
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt));
       const isNew = !knownById && !knownByAllIds && !isDuplicateByName && !isDuplicateByRewardExpiry;
       
@@ -2971,6 +2976,7 @@ app.post('/webhook/quests', async (req, res) => {
           type: quest.type,
           startsAt: quest.startsAt || null,
           expiresAt: quest.expiresAt,
+          regions: quest.regions || null,
           detectedAt: quest.detectedAt || new Date().toLocaleString(),
           allIds: quest.allIds?.length > 0 ? quest.allIds.map(String) : [String(quest.id)],
           allLinks: quest.allLinks || [],

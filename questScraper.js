@@ -343,6 +343,7 @@ async function parseActiveQuests(allQuests) {
       ctaLink,
       startsAt: config.starts_at,
       expiresAt: config.expires_at,
+      regions: Array.isArray(entry.regions) && entry.regions.length > 0 ? entry.regions : null,
       detectedAt: new Date().toLocaleString(),
       isNew: !notifiedQuestIds.has(String(entry.id)),
       _isEnglishLink: isEnglishLink,
