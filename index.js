@@ -1855,8 +1855,11 @@ function buildQuestPayload(questData, style, pingContent = '') {
     }
     fields.push({ name: '⏰ Expires', value: expiryText, inline: true });
     if (questData.regions?.length > 0) {
-      fields.push({ name: '🌍 Region', value: `${questData.regions.join(', ')} *(may still be accessible globally)*`, inline: true });
+      fields.push({ name: '🌍 Region', value: questData.regions.join(', '), inline: true });
     }
+
+    const isOrbsReward = /\d+\s*(discord\s*)?orb/i.test(questData.reward || '');
+    const orbsThumbnail = 'https://i.imgur.com/oU5mGmA.png';
 
     const embed = {
       color: 0x5865F2,
@@ -1868,7 +1871,7 @@ function buildQuestPayload(questData, style, pingContent = '') {
       footer: { text: questData.regions?.length > 0 ? 'QuestHunter • Region locks may not be enforced globally' : 'QuestHunter', icon_url: 'https://i.imgur.com/yTgBkjM.png' },
       timestamp: new Date().toISOString(),
     };
-    if (questData.imageUrl) embed.thumbnail = { url: questData.imageUrl };
+    embed.thumbnail = { url: isOrbsReward ? orbsThumbnail : (questData.imageUrl || orbsThumbnail) };
 
     // Add regional link buttons if quest has multiple IDs (max 5 rows × 5 buttons = 25)
     const allIds = questData.allIds?.length > 1 ? questData.allIds : null;
