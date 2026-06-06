@@ -2692,7 +2692,7 @@ client.on('interactionCreate', async (interaction) => {
         const hasSpecVid = taskKeys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
         const tasks = taskKeys.filter(k => !(k === 'WATCH_VIDEO' && hasSpecVid)).map(k => TASK_LABELS[k] || k);
         const imageUrl = getImg(qid, cfg);
-        const game = cfg.messages?.game_title || cfg.application?.name || 'Unknown';
+        const game = cfg.application?.name || cfg.messages?.game_title || 'Unknown';
         const questName = cfg.messages?.quest_name || 'Unknown';
         const expiresAt = cfg.expires_at;
         const rel = formatRelative(expiresAt);
