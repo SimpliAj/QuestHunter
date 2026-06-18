@@ -2713,6 +2713,11 @@ client.on('interactionCreate', async (interaction) => {
 
       const ORBS_IMG = 'https://i.imgur.com/v2Ra1GP.png';
       const IMG_EXTS = /\.(png|jpg|jpeg|gif|webp)$/i;
+      let gifCache = {};
+      try {
+        const cachePath = path.join(__dirname, 'data', 'gif_cache.json');
+        if (fs.existsSync(cachePath)) gifCache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+      } catch (e) {}
       const cdnUrl = (qid, path) => {
         if (!path) return null;
         return path.startsWith('quests/') ? `https://cdn.discordapp.com/${path}` : `https://cdn.discordapp.com/quests/${qid}/${path}`;
@@ -2777,8 +2782,8 @@ client.on('interactionCreate', async (interaction) => {
         const heroImageUrl = cfg.assets?.hero ? cdnUrl(qid, cfg.assets.hero) : null;
         const rewardR = (cfg.rewards_config?.rewards || cfg.rewards || [])[0];
         const rewardImageUrl = rewardR?.orb_quantity != null ? ORBS_IMG
-          : (rewardR?.asset && IMG_EXTS.test(rewardR.asset) ? cdnUrl(qid, rewardR.asset) : null);
-        // MP4 reward assets not converted in admin test (no ffmpeg context here)
+          : (rewardR?.asset && IMG_EXTS.test(rewardR.asset) ? cdnUrl(qid, rewardR.asset) : null)
+          || (/\.mp4$/i.test(rewardR?.asset || '') ? (gifCache[`${qid}_reward`] || null) : null);
         const questData = {
           id: qid,
           name: cfg.messages?.quest_name || 'Unknown',
