@@ -2669,6 +2669,14 @@ client.on('interactionCreate', async (interaction) => {
             .setPlaceholder('5')
             .setMinLength(1).setMaxLength(2)
             .setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('test_style')
+            .setLabel('Style: default / embed / components')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('embed')
+            .setRequired(false)
         )
       );
       await interaction.showModal(modal);
@@ -2700,6 +2708,8 @@ client.on('interactionCreate', async (interaction) => {
     try {
       const countRaw = interaction.fields.getTextInputValue('test_count');
       const count = Math.min(10, Math.max(1, parseInt(countRaw) || 5));
+      const styleRaw = (interaction.fields.getTextInputValue('test_style') || 'embed').trim().toLowerCase();
+      const testStyle = ['default', 'embed', 'components'].includes(styleRaw) ? styleRaw : 'embed';
 
       const ORBS_IMG = 'https://i.imgur.com/v2Ra1GP.png';
       const IMG_EXTS = /\.(png|jpg|jpeg|gif|webp)$/i;
@@ -2764,6 +2774,10 @@ client.on('interactionCreate', async (interaction) => {
         const taskKeys = Object.keys(cfg.task_config_v2?.tasks || cfg.task_config?.tasks || {});
         const hasSpecVid = taskKeys.some(k => k === 'WATCH_VIDEO_ON_DESKTOP' || k === 'WATCH_VIDEO_ON_MOBILE');
         const tasks = taskKeys.filter(k => !(k === 'WATCH_VIDEO' && hasSpecVid)).map(k => TASK_LABELS[k] || k);
+        const heroImageUrl = cfg.assets?.hero ? cdnUrl(qid, cfg.assets.hero) : null;
+        const rewardR = (cfg.rewards_config?.rewards || cfg.rewards || [])[0];
+        const rewardImageUrl = rewardR?.orb_quantity != null ? ORBS_IMG
+          : (rewardR?.asset && IMG_EXTS.test(rewardR.asset) ? cdnUrl(qid, rewardR.asset) : null);
         const questData = {
           id: qid,
           name: cfg.messages?.quest_name || 'Unknown',
@@ -2771,13 +2785,26 @@ client.on('interactionCreate', async (interaction) => {
           reward,
           tasks,
           imageUrl: getImg(qid, cfg),
+          heroImageUrl,
+          rewardImageUrl,
           expiresAt: cfg.expires_at,
           regions: Array.isArray(cfg.regions) && cfg.regions.length > 0 ? cfg.regions : null,
         };
-        return buildQuestPayload(questData, 'embed').embeds[0];
+        return { questData, payload: buildQuestPayload(questData, testStyle) };
       });
 
-      await interaction.editReply({ content: `Showing **${embeds.length}** quest(s):`, embeds });
+      if (testStyle === 'components') {
+        // Components V2 requires direct REST post to webhook
+        for (const { payload } of embeds) {
+          await client.rest.post(Routes.webhook(client.application.id, interaction.token), {
+            body: { ...payload, flags: 32768 | 64 },
+          });
+        }
+        return;
+      }
+
+      const embedList = embeds.map(e => e.payload.embeds?.[0]).filter(Boolean);
+      await interaction.editReply({ content: `Showing **${embedList.length}** quest(s) [${testStyle}]:`, embeds: embedList });
     } catch (err) {
       await interaction.editReply({ content: `❌ Quest test failed: ${err.message}` });
     }
