@@ -219,6 +219,20 @@ async function getImageUrl(questId, config) {
   return ORBS_GIF;
 }
 
+function getHeroImageUrlWide(questId, config) {
+  const assets = config.assets || {};
+  if (assets.hero) return buildCdnUrl(questId, assets.hero);
+  return null;
+}
+
+function getRewardImageUrl(questId, config) {
+  const rewards = config.rewards_config?.rewards || config.rewards || [];
+  const r = rewards[0];
+  if (r?.orb_quantity != null) return ORBS_GIF;
+  if (r?.asset && IMAGE_EXTS.test(r.asset)) return buildCdnUrl(questId, r.asset);
+  return null;
+}
+
 function getGameLogoUrl(questId, config) {
   const assets = config.assets || {};
   if (assets.logotype_light) return buildCdnUrl(questId, assets.logotype_light);
@@ -322,6 +336,8 @@ async function parseActiveQuests(allQuests) {
 
     const tasks = parseTasks(config);
     const imageUrl = await getImageUrl(entry.id, config);
+    const heroImageUrl = getHeroImageUrlWide(entry.id, config);
+    const rewardImageUrl = getRewardImageUrl(entry.id, config);
     const gameLogo = getGameLogoUrl(entry.id, config);
     const publisher = config.messages?.game_publisher || null;
     const ctaLink = config.cta_config?.link || config.application?.link || null;
@@ -339,6 +355,8 @@ async function parseActiveQuests(allQuests) {
       reward,
       tasks,
       imageUrl,
+      heroImageUrl,
+      rewardImageUrl,
       gameLogo,
       ctaLink,
       startsAt: config.starts_at,

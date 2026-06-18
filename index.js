@@ -293,9 +293,9 @@ function formatRelative(dateStr) {
   const date = parseAnyDate(dateStr);
   if (!date) return null;
   const diffDays = Math.round((date.getTime() - Date.now()) / 86400000);
-  if (diffDays === 0) return 'heute';
-  if (diffDays > 0) return `in ${diffDays} Tag${diffDays === 1 ? '' : 'en'}`;
-  return `vor ${Math.abs(diffDays)} Tag${Math.abs(diffDays) === 1 ? '' : 'en'}`;
+  if (diffDays === 0) return 'today';
+  if (diffDays > 0) return `in ${diffDays} day${diffDays === 1 ? '' : 's'}`;
+  return `${Math.abs(diffDays)} day${Math.abs(diffDays) === 1 ? '' : 's'} ago`;
 }
 
 // Set guild's notification channel
@@ -540,6 +540,7 @@ async function registerSlashCommands() {
           choices: [
             { name: 'Default (text message)', value: 'default' },
             { name: 'Embed (rich card with reward image)', value: 'embed' },
+            { name: 'Components V2 (modern sections)', value: 'components' },
           ],
         },
       ],
@@ -575,6 +576,7 @@ async function registerSlashCommands() {
           choices: [
             { name: 'Default (text + auto-embed)', value: 'default' },
             { name: 'Embed (rich card with reward image)', value: 'embed' },
+            { name: 'Components V2 (modern sections)', value: 'components' },
           ],
         },
       ],
@@ -1716,7 +1718,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
         'disabled': 'Disabled'
       }[filterOption];
 
-      const styleText = (userPrefs.dmStyle === 'embed') ? 'Embed (rich card)' : 'Default (text message)';
+      const styleText = userPrefs.dmStyle === 'embed' ? 'Embed (rich card)' : userPrefs.dmStyle === 'components' ? 'Components V2 (modern)' : 'Default (text message)';
 
       const fields = [
         { name: 'Status', value: filterOption === 'disabled' ? '❌ **DISABLED**' : '✅ **ENABLED**', inline: false },
@@ -1755,7 +1757,7 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       guildSettings.get(interaction.guildId).notificationStyle = style;
       saveData();
 
-      const label = style === 'embed' ? 'Embed (rich card with reward image)' : 'Default (text + auto-embed)';
+      const label = style === 'embed' ? 'Embed (rich card with reward image)' : style === 'components' ? 'Components V2 (modern sections)' : 'Default (text + auto-embed)';
       await interaction.reply({
         embeds: [{
           color: 0x5865F2,
@@ -1908,6 +1910,63 @@ function buildQuestPayload(questData, style, pingContent = '') {
     return { content: pingContent || undefined, embeds: [embed], components };
   }
 
+  if (style === 'components') {
+    const heroThumb = questData.heroImageUrl || null;
+    const rewardImage = questData.rewardImageUrl || null;
+
+    const questInfoLines = [
+      `**🎮 Game:** ${questData.game || 'Unknown'}`,
+      `**⏰ Expires:** ${expiryText}`,
+    ];
+    if (questData.regions?.length > 0) questInfoLines.push(`**🌍 Region:** ${questData.regions.join(', ')}`);
+    const taskText = questData.tasks?.length > 0 ? questData.tasks.map(t => `• ${t}`).join('\n') : '• Unknown';
+
+    const allIds = questData.allIds?.length > 1 ? questData.allIds : null;
+    let buttonRows = [];
+    if (allIds) {
+      const allLinks = questData.allLinks || [];
+      const linkMap = new Map(allLinks.map(l => [String(l.id), l.flag]));
+      const codeCount = {};
+      let unknownCount = 0;
+      const capped = allIds.slice(0, 25);
+      for (let i = 0; i < capped.length; i += 5) {
+        buttonRows.push({
+          type: 1,
+          components: capped.slice(i, i + 5).map((id) => {
+            const code = linkMap.get(String(id)) || null;
+            let label;
+            if (code) {
+              codeCount[code] = (codeCount[code] || 0) + 1;
+              label = codeCount[code] > 1 ? `${code} #${codeCount[code]}` : code;
+            } else {
+              unknownCount++;
+              label = `Quest Link ${unknownCount}`;
+            }
+            return { type: 2, style: 5, label, url: `https://discord.com/quests/${id}` };
+          }),
+        });
+      }
+    } else {
+      buttonRows = [{ type: 1, components: [{ type: 2, style: 5, label: 'Open Quest', url: questLink }] }];
+    }
+
+    const containerComponents = [
+      { type: 10, content: `**New Quest — [${questData.name}](${questLink})**` },
+      ...(heroThumb ? [{ type: 12, items: [{ media: { url: heroThumb } }] }] : []),
+      { type: 14, divider: true, spacing: 1 },
+      { type: 10, content: `## Quest Info\n${questInfoLines.join('\n')}` },
+      { type: 14, divider: true, spacing: 1 },
+      { type: 10, content: `## Platforms\n${taskText}` },
+      { type: 14, divider: true, spacing: 1 },
+      ...(rewardImage
+        ? [{ type: 9, components: [{ type: 10, content: `## Reward\n${questData.reward || 'Unknown'}` }], accessory: { type: 11, media: { url: rewardImage }, description: 'Reward' } }]
+        : [{ type: 10, content: `## Reward\n${questData.reward || 'Unknown'}` }]),
+      { type: 14, divider: true, spacing: 1 },
+      ...buttonRows,
+    ];
+    return { content: pingContent || undefined, flags: 32768, components: [{ type: 17, accent_color: 0x5865F2, components: containerComponents }] };
+  }
+
   // Default style
   let content = `🎯 **New Quest Detected!**\n${pingContent}`;
   const infoLines = [];
@@ -1980,7 +2039,13 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
     }
 
     const payload = buildQuestPayload(questData, notificationStyle, pingContent);
-    const message = await channel.send(payload);
+    let message;
+    if (notificationStyle === 'components') {
+      const result = await client.rest.post(Routes.channelMessages(channelId), { body: payload });
+      message = { id: result.id };
+    } else {
+      message = await channel.send(payload);
+    }
 
     console.log(`  ✅ Sent to <#${channelId}> [${notificationStyle}]`);
 
@@ -2071,7 +2136,12 @@ async function sendDMNotifications(questData) {
         const prefs = userPreferences.get(userId) || {};
         const dmStyle = prefs.dmStyle || 'default';
         const payload = buildQuestPayload(questData, dmStyle);
-        await user.send(payload);
+        if (dmStyle === 'components') {
+          const dmChannel = await user.createDM();
+          await client.rest.post(Routes.channelMessages(dmChannel.id), { body: payload });
+        } else {
+          await user.send(payload);
+        }
         sentCount++;
 
         // Vote prompt every random 5-10 DMs
@@ -2868,6 +2938,8 @@ app.post('/webhook/quests', async (req, res) => {
     }
 
     // Find quests that were active but are no longer sent (expired/deleted by Discord)
+    // Grace period: require 2 consecutive missing scans before expiring (prevents single bad API response from expiring everything)
+    // Exception: if the expiry date has actually passed, expire immediately
     const expiredQuestsList = [];
     const expiredPrimaryIds = new Set();
     knownQuests.forEach((quest, questId) => {
@@ -2878,14 +2950,31 @@ app.post('/webhook/quests', async (req, res) => {
       const allIds = (quest.allIds || [String(questId)]).map(String);
       const stillActive = allIds.some(id => currentQuestIds.has(id));
 
-      if (!stillActive && !expiredPrimaryIds.has(String(questId))) {
-        expiredPrimaryIds.add(String(questId));
-        expiredQuestsList.push(quest);
-        expiredQuests.set(String(questId), quest);
-        // Remove primary and all alias entries
-        knownQuests.delete(String(questId));
-        for (const vid of allIds) {
-          if (vid !== String(questId)) knownQuests.delete(vid);
+      if (stillActive) {
+        // Reset miss counter when quest is seen again
+        if (quest.missedScans) {
+          quest.missedScans = 0;
+        }
+        return;
+      }
+
+      if (!expiredPrimaryIds.has(String(questId))) {
+        const dateExpired = isQuestActuallyExpired(quest.expiresAt);
+        const missedScans = (quest.missedScans || 0) + 1;
+
+        if (dateExpired || missedScans >= 2) {
+          // Actually expire: date passed or missing for 2+ consecutive scans (Discord deleted)
+          expiredPrimaryIds.add(String(questId));
+          expiredQuestsList.push(quest);
+          expiredQuests.set(String(questId), { ...quest, missedScans: undefined });
+          knownQuests.delete(String(questId));
+          for (const vid of allIds) {
+            if (vid !== String(questId)) knownQuests.delete(vid);
+          }
+        } else {
+          // First miss — wait for next scan before expiring
+          quest.missedScans = missedScans;
+          console.log(`  ⚠️  Quest missing from scraper (miss ${missedScans}/2): ${quest.name}`);
         }
       }
     });
@@ -2934,7 +3023,67 @@ app.post('/webhook/quests', async (req, res) => {
       // 0. Append-only safeguard — if any ID was ever sent, never re-notify
       const allIds = quest.allIds?.map(String) || [String(quest.id)];
       const everSent = everSentIds.has(String(quest.id)) || allIds.some(id => everSentIds.has(id));
-      if (everSent) { continue; }
+      if (everSent) {
+        // Still track in knownQuests for expiry detection — just skip notification
+        if (!knownQuests.has(String(quest.id))) {
+          // Check if it's in expiredQuests and needs re-activation
+          let expiredId = null;
+          if (expiredQuests.has(String(quest.id))) {
+            expiredId = String(quest.id);
+          } else {
+            for (const [k, v] of expiredQuests) {
+              if (allIds.includes(k)) { expiredId = k; break; }
+            }
+          }
+          if (expiredId !== null) {
+            const old = expiredQuests.get(expiredId);
+            expiredQuests.delete(expiredId);
+            knownQuests.set(String(quest.id), {
+              ...(old || {}),
+              id: quest.id,
+              name: quest.name,
+              game: quest.game || old?.game || null,
+              reward: quest.reward,
+              tasks: quest.tasks?.length > 0 ? quest.tasks : (old?.tasks || []),
+              imageUrl: quest.imageUrl || old?.imageUrl || null,
+              startsAt: quest.startsAt || old?.startsAt || null,
+              expiresAt: quest.expiresAt,
+              allIds: allIds,
+            });
+            console.log(`  🔄 Re-tracked from expired (silent): ${quest.name}`);
+          } else {
+            // Not in expired either — add silently
+            knownQuests.set(String(quest.id), {
+              id: quest.id,
+              name: quest.name,
+              game: quest.game || null,
+              reward: quest.reward,
+              tasks: quest.tasks || [],
+              imageUrl: quest.imageUrl || null,
+              type: quest.type,
+              startsAt: quest.startsAt || null,
+              expiresAt: quest.expiresAt,
+              regions: quest.regions || null,
+              detectedAt: quest.detectedAt || new Date().toLocaleString(),
+              allIds: allIds,
+              allLinks: quest.allLinks || [],
+              guildMessages: [],
+            });
+            console.log(`  ➕ Re-tracked silently (was missing): ${quest.name}`);
+          }
+          saveData();
+        } else {
+          // Update mutable fields on existing entry
+          const existingQuest = knownQuests.get(String(quest.id));
+          if (existingQuest) {
+            if (existingQuest.expiresAt !== quest.expiresAt) existingQuest.expiresAt = quest.expiresAt;
+            if (quest.imageUrl && existingQuest.imageUrl !== quest.imageUrl) existingQuest.imageUrl = quest.imageUrl;
+            if (quest.tasks?.length > 0) existingQuest.tasks = quest.tasks;
+            if (quest.game && !existingQuest.game) existingQuest.game = quest.game;
+          }
+        }
+        continue;
+      }
       // 1. Check primary ID (active + expired)
       const knownById = knownQuests.has(quest.id) || expiredQuests.has(String(quest.id));
       // 2. Check all allIds (language variants)
@@ -3067,7 +3216,11 @@ app.post('/webhook/quests', async (req, res) => {
                 const msg = await ch.messages.fetch(gm.messageId);
                 const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
                 const updatedPayload = buildQuestPayload({ ...original, allIds: updatedAllIds }, style);
-                await msg.edit(updatedPayload);
+                if (style === 'components') {
+                  await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
+                } else {
+                  await msg.edit(updatedPayload);
+                }
                 console.log(`  ✏️  Updated message ${gm.messageId} in channel ${gm.channelId}`);
               } catch (e) {
                 console.error(`  ⚠️  Could not edit message for lang variant:`, e.message);
