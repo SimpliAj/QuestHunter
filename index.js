@@ -2778,6 +2778,7 @@ client.on('interactionCreate', async (interaction) => {
         const rewardR = (cfg.rewards_config?.rewards || cfg.rewards || [])[0];
         const rewardImageUrl = rewardR?.orb_quantity != null ? ORBS_IMG
           : (rewardR?.asset && IMG_EXTS.test(rewardR.asset) ? cdnUrl(qid, rewardR.asset) : null);
+        // MP4 reward assets not converted in admin test (no ffmpeg context here)
         const questData = {
           id: qid,
           name: cfg.messages?.quest_name || 'Unknown',

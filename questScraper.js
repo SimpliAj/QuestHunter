@@ -225,11 +225,16 @@ function getHeroImageUrlWide(questId, config) {
   return null;
 }
 
-function getRewardImageUrl(questId, config) {
+async function getRewardImageUrl(questId, config) {
   const rewards = config.rewards_config?.rewards || config.rewards || [];
   const r = rewards[0];
   if (r?.orb_quantity != null) return ORBS_GIF;
   if (r?.asset && IMAGE_EXTS.test(r.asset)) return buildCdnUrl(questId, r.asset);
+  if (r?.asset && /\.mp4$/i.test(r.asset)) {
+    const mp4Url = buildCdnUrl(questId, r.asset);
+    const gifUrl = await convertMp4ToGif(mp4Url, `${questId}_reward`);
+    if (gifUrl) return gifUrl;
+  }
   return null;
 }
 
@@ -337,7 +342,7 @@ async function parseActiveQuests(allQuests) {
     const tasks = parseTasks(config);
     const imageUrl = await getImageUrl(entry.id, config);
     const heroImageUrl = getHeroImageUrlWide(entry.id, config);
-    const rewardImageUrl = getRewardImageUrl(entry.id, config);
+    const rewardImageUrl = await getRewardImageUrl(entry.id, config);
     const gameLogo = getGameLogoUrl(entry.id, config);
     const publisher = config.messages?.game_publisher || null;
     const ctaLink = config.cta_config?.link || config.application?.link || null;
