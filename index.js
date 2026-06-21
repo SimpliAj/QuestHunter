@@ -3034,10 +3034,14 @@ app.post('/webhook/quests', async (req, res) => {
 
       if (!expiredPrimaryIds.has(String(questId))) {
         const dateExpired = isQuestActuallyExpired(quest.expiresAt);
+        const expiresAt = quest.expiresAt ? new Date(quest.expiresAt).getTime() : null;
+        const expiresWithin6h = expiresAt && expiresAt - Date.now() < 6 * 60 * 60 * 1000;
+        // If expiry date is >6h in the future, require many more missed scans to avoid false positives
+        const missedThreshold = (dateExpired || expiresWithin6h) ? 2 : 10;
         const missedScans = (quest.missedScans || 0) + 1;
 
-        if (dateExpired || missedScans >= 2) {
-          // Actually expire: date passed or missing for 2+ consecutive scans (Discord deleted)
+        if (dateExpired || missedScans >= missedThreshold) {
+          // Actually expire: date passed or missing for enough consecutive scans
           expiredPrimaryIds.add(String(questId));
           expiredQuestsList.push(quest);
           expiredQuests.set(String(questId), { ...quest, missedScans: undefined });
@@ -3046,9 +3050,9 @@ app.post('/webhook/quests', async (req, res) => {
             if (vid !== String(questId)) knownQuests.delete(vid);
           }
         } else {
-          // First miss — wait for next scan before expiring
+          // Not yet expired — wait for more missed scans
           quest.missedScans = missedScans;
-          console.log(`  ⚠️  Quest missing from scraper (miss ${missedScans}/2): ${quest.name}`);
+          console.log(`  ⚠️  Quest missing from scraper (miss ${missedScans}/${missedThreshold}): ${quest.name}`);
         }
       }
     });
