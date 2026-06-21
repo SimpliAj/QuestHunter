@@ -385,7 +385,41 @@ client.once('ready', () => {
 
   // Start scanning for quests
   startQuestScanner();
+
+  // One-time fix: update orbs quest messages that have old/missing reward image
+  setTimeout(() => fixOrbsMessages(), 5000);
 });
+
+async function fixOrbsMessages() {
+  const ORBS_URL = 'https://cdn.discordapp.com/assets/content/eff35518172b971fa47c521ca21c7576d3a245433a669a6765f63b744b7b733a.webm?format=png';
+  let updated = 0, skipped = 0, failed = 0;
+  for (const [id, quest] of knownQuests) {
+    if (!quest.reward?.toLowerCase().includes('orb')) continue;
+    const updatedQuest = { ...quest, rewardImageUrl: ORBS_URL };
+    knownQuests.set(id, updatedQuest);
+    for (const gm of (quest.guildMessages || [])) {
+      try {
+        const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
+        if (style !== 'components') continue;
+        // Only patch messages that are already Components V2 (flags & 32768)
+        const ch = await client.channels.fetch(gm.channelId).catch(() => null);
+        if (!ch) { skipped++; continue; }
+        const msg = await ch.messages.fetch(gm.messageId).catch(() => null);
+        if (!msg) { skipped++; continue; }
+        if (!(msg.flags.bitfield & 32768)) { skipped++; continue; }
+        const updatedPayload = buildQuestPayload(updatedQuest, 'components');
+        await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
+        updated++;
+        await new Promise(r => setTimeout(r, 600));
+      } catch (e) {
+        console.error(`⚠️ fix_orbs: ${gm.messageId}:`, e.message, e.rawError ? JSON.stringify(e.rawError) : '');
+        failed++;
+      }
+    }
+  }
+  saveData();
+  console.log(`🔮 Orbs fix: ${updated} updated, ${skipped} skipped (not components), ${failed} failed`);
+}
 
 async function registerSlashCommands() {
   const commands = [
@@ -2059,6 +2093,9 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
       reward: questData.reward,
       tasks: questData.tasks || [],
       imageUrl: questData.imageUrl || null,
+      heroImageUrl: questData.heroImageUrl || existing.heroImageUrl || null,
+      rewardImageUrl: questData.rewardImageUrl || existing.rewardImageUrl || null,
+      gameLogo: questData.gameLogo || existing.gameLogo || null,
       type: questData.type,
       startsAt: questData.startsAt || null,
       expiresAt: questData.expiresAt,
@@ -2711,7 +2748,7 @@ client.on('interactionCreate', async (interaction) => {
       const styleRaw = (interaction.fields.getTextInputValue('test_style') || 'embed').trim().toLowerCase();
       const testStyle = ['default', 'embed', 'components'].includes(styleRaw) ? styleRaw : 'embed';
 
-      const ORBS_IMG = 'https://i.imgur.com/v2Ra1GP.png';
+      const ORBS_IMG = 'https://cdn.discordapp.com/assets/content/eff35518172b971fa47c521ca21c7576d3a245433a669a6765f63b744b7b733a.webm?format=png';
       const IMG_EXTS = /\.(png|jpg|jpeg|gif|webp)$/i;
       let gifCache = {};
       try {
@@ -2725,11 +2762,10 @@ client.on('interactionCreate', async (interaction) => {
       const getImg = (qid, cfg) => {
         const r = (cfg.rewards_config?.rewards || cfg.rewards || [])[0];
         if (r?.asset && IMG_EXTS.test(r.asset)) return cdnUrl(qid, r.asset);
-        if (r?.orb_quantity != null) return ORBS_IMG;
         const a = cfg.assets || {};
         if (a.quest_bar_hero && IMG_EXTS.test(a.quest_bar_hero)) return cdnUrl(qid, a.quest_bar_hero);
         if (a.hero && IMG_EXTS.test(a.hero)) return cdnUrl(qid, a.hero);
-        return cdnUrl(qid, a.game_tile_light || a.game_tile) || ORBS_IMG;
+        return cdnUrl(qid, a.game_tile_light || a.game_tile) || null;
       };
       const TASK_LABELS = {
         WATCH_VIDEO: 'Video', WATCH_VIDEO_ON_DESKTOP: 'Video (Desktop)', WATCH_VIDEO_ON_MOBILE: 'Video (Mobile)',
@@ -2781,9 +2817,10 @@ client.on('interactionCreate', async (interaction) => {
         const tasks = taskKeys.filter(k => !(k === 'WATCH_VIDEO' && hasSpecVid)).map(k => TASK_LABELS[k] || k);
         const heroImageUrl = cfg.assets?.hero ? cdnUrl(qid, cfg.assets.hero) : null;
         const rewardR = (cfg.rewards_config?.rewards || cfg.rewards || [])[0];
-        const rewardImageUrl = rewardR?.orb_quantity != null ? ORBS_IMG
-          : (rewardR?.asset && IMG_EXTS.test(rewardR.asset) ? cdnUrl(qid, rewardR.asset) : null)
-          || (/\.mp4$/i.test(rewardR?.asset || '') ? (gifCache[`${qid}_reward`] || null) : null);
+        const rewardImageUrl = rewardR?.asset && IMG_EXTS.test(rewardR.asset) ? cdnUrl(qid, rewardR.asset)
+          : /\.mp4$/i.test(rewardR?.asset || '') ? (gifCache[`${qid}_reward`] || null)
+          : rewardR?.orb_quantity != null ? ORBS_IMG
+          : null;
         const questData = {
           id: qid,
           name: cfg.messages?.quest_name || 'Unknown',
@@ -3147,6 +3184,9 @@ app.post('/webhook/quests', async (req, res) => {
           reward: quest.reward,
           tasks: quest.tasks || [],
           imageUrl: quest.imageUrl || null,
+          heroImageUrl: quest.heroImageUrl || null,
+          rewardImageUrl: quest.rewardImageUrl || null,
+          gameLogo: quest.gameLogo || null,
           type: quest.type,
           startsAt: quest.startsAt || null,
           expiresAt: quest.expiresAt,
