@@ -392,47 +392,37 @@ client.once('ready', () => {
 
 async function fixOrbsMessages() {
   const ORBS_URL = 'https://cdn.discordapp.com/assets/content/eff35518172b971fa47c521ca21c7576d3a245433a669a6765f63b744b7b733a.webm?format=png';
-  let updated = 0, reposted = 0, skipped = 0, failed = 0;
-  for (const [id, quest] of knownQuests) {
-    if (!quest.reward?.toLowerCase().includes('orb')) continue;
-    const updatedQuest = { ...quest, rewardImageUrl: ORBS_URL };
-    knownQuests.set(id, updatedQuest);
-    const guildMessages = quest.guildMessages || [];
-    for (let i = 0; i < guildMessages.length; i++) {
-      const gm = guildMessages[i];
-      try {
-        const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
-        if (style !== 'components') continue;
-        const ch = await client.channels.fetch(gm.channelId).catch(() => null);
-        if (!ch) { skipped++; continue; }
-        const updatedPayload = buildQuestPayload(updatedQuest, 'components');
+  let updated = 0, skipped = 0, failed = 0;
+
+  async function processQuestMap(questMap) {
+    for (const [id, quest] of questMap) {
+      if (!quest.reward?.toLowerCase().includes('orb')) continue;
+      const updatedQuest = { ...quest, rewardImageUrl: ORBS_URL };
+      questMap.set(id, updatedQuest);
+      for (const gm of (quest.guildMessages || [])) {
         try {
+          const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
+          if (style !== 'components') continue;
+          const ch = await client.channels.fetch(gm.channelId).catch(() => null);
+          if (!ch) { skipped++; continue; }
+          const updatedPayload = buildQuestPayload(updatedQuest, 'components');
           await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
           updated++;
-        } catch (patchErr) {
-          const isEmbedMsg = patchErr.message?.includes('Invalid Form Body') || patchErr.code === 50035;
-          if (!isEmbedMsg) throw patchErr;
-          // Old embed message — delete it and send a fresh components message
-          try {
-            await client.rest.delete(Routes.channelMessage(gm.channelId, gm.messageId));
-          } catch (_) { /* ignore delete errors */ }
-          const result = await client.rest.post(Routes.channelMessages(gm.channelId), { body: updatedPayload });
-          // Update stored messageId
-          guildMessages[i] = { ...gm, messageId: result.id };
-          reposted++;
+          await new Promise(r => setTimeout(r, 600));
+        } catch (e) {
+          // Silently skip embed messages (can't be patched as components)
+          if (e.message?.includes('Invalid Form Body') || e.code === 50035) { skipped++; continue; }
+          console.error(`⚠️ fix_orbs: ${gm.messageId}:`, e.message);
+          failed++;
         }
-        await new Promise(r => setTimeout(r, 600));
-      } catch (e) {
-        console.error(`⚠️ fix_orbs: ${gm.messageId}:`, e.message, e.rawError ? JSON.stringify(e.rawError) : '');
-        failed++;
       }
     }
-    // Persist updated guildMessages for this quest
-    const stored = knownQuests.get(id);
-    if (stored) knownQuests.set(id, { ...stored, guildMessages });
   }
+
+  await processQuestMap(knownQuests);
+  await processQuestMap(expiredQuests);
   saveData();
-  console.log(`🔮 Orbs fix: ${updated} patched, ${reposted} reposted, ${skipped} skipped, ${failed} failed`);
+  console.log(`🔮 Orbs fix: ${updated} patched, ${skipped} skipped, ${failed} failed`);
 }
 
 async function registerSlashCommands() {
@@ -3315,7 +3305,37 @@ app.post('/webhook/quests', async (req, res) => {
             }
           }
         } else {
-          console.log(`  ℹ️  EXISTING: ${quest.name}`);
+          // Update image URLs for existing quest if scraper has fresher data
+          const existingQ = knownQuests.get(String(quest.id));
+          if (existingQ) {
+            const needsUpdate = (quest.heroImageUrl && !existingQ.heroImageUrl) ||
+                                (quest.rewardImageUrl && !existingQ.rewardImageUrl) ||
+                                (quest.gameLogo && !existingQ.gameLogo);
+            if (needsUpdate) {
+              const merged = {
+                ...existingQ,
+                heroImageUrl: quest.heroImageUrl || existingQ.heroImageUrl || null,
+                rewardImageUrl: quest.rewardImageUrl || existingQ.rewardImageUrl || null,
+                gameLogo: quest.gameLogo || existingQ.gameLogo || null,
+              };
+              knownQuests.set(String(quest.id), merged);
+              // Patch existing components-style messages with updated images
+              for (const gm of (existingQ.guildMessages || [])) {
+                try {
+                  const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
+                  if (style !== 'components') continue;
+                  const updatedPayload = buildQuestPayload(merged, 'components');
+                  await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload }).catch(() => {});
+                } catch (_) {}
+              }
+              saveData();
+              console.log(`  🖼️  Updated images for existing quest: ${quest.name}`);
+            } else {
+              console.log(`  ℹ️  EXISTING: ${quest.name}`);
+            }
+          } else {
+            console.log(`  ℹ️  EXISTING: ${quest.name}`);
+          }
         }
 
         // Re-activate quest if scraper says it's active but it ended up in expiredQuests
