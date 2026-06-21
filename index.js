@@ -3115,6 +3115,10 @@ app.post('/webhook/quests', async (req, res) => {
           }
           if (expiredId !== null) {
             const old = expiredQuests.get(expiredId);
+            // Only re-track if expiry date actually changed (real re-activation, not API flicker)
+            if (old && old.expiresAt === quest.expiresAt) {
+              console.log(`  ⏭️  Skipping re-track (same expiresAt, API flicker): ${quest.name}`);
+            } else {
             expiredQuests.delete(expiredId);
             knownQuests.set(String(quest.id), {
               ...(old || {}),
@@ -3129,6 +3133,7 @@ app.post('/webhook/quests', async (req, res) => {
               allIds: allIds,
             });
             console.log(`  🔄 Re-tracked from expired (silent): ${quest.name}`);
+            } // end else (expiresAt changed)
           } else {
             // Not in expired either — add silently
             knownQuests.set(String(quest.id), {
@@ -3286,17 +3291,24 @@ app.post('/webhook/quests', async (req, res) => {
           const original = [...knownQuests.values()].find(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt);
           if (original) {
             const updatedAllIds = [...new Set([...(original.allIds || [original.id]), quest.id])];
-            knownQuests.set(original.id, { ...original, allIds: updatedAllIds });
+            // Merge new region into regions list
+            const updatedRegions = [...new Set([...(original.regions || []), ...(quest.regions || [])])];
+            // Merge new allLinks entries (by id)
+            const existingLinkIds = new Set((original.allLinks || []).map(l => String(l.id)));
+            const newLinks = (quest.allLinks || []).filter(l => !existingLinkIds.has(String(l.id)));
+            const updatedAllLinks = [...(original.allLinks || []), ...newLinks];
+            const updatedOriginal = { ...original, allIds: updatedAllIds, regions: updatedRegions, allLinks: updatedAllLinks };
+            knownQuests.set(original.id, updatedOriginal);
             saveData();
-            console.log(`  🌍 LANG-VARIANT: ${quest.name} → added to quest ${original.id} (${updatedAllIds.length} links total)`);
+            console.log(`  🌍 LANG-VARIANT: ${quest.name} → added to quest ${original.id} (${updatedAllIds.length} links, regions: ${updatedRegions.join(',')})`);
 
-            // Edit existing Discord notification messages to show updated link buttons
+            // Edit existing Discord notification messages to show updated link buttons + regions
             for (const gm of (original.guildMessages || [])) {
               try {
                 const ch = await client.channels.fetch(gm.channelId);
                 const msg = await ch.messages.fetch(gm.messageId);
                 const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
-                const updatedPayload = buildQuestPayload({ ...original, allIds: updatedAllIds }, style);
+                const updatedPayload = buildQuestPayload(updatedOriginal, style);
                 if (style === 'components') {
                   await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
                 } else {
