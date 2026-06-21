@@ -392,33 +392,47 @@ client.once('ready', () => {
 
 async function fixOrbsMessages() {
   const ORBS_URL = 'https://cdn.discordapp.com/assets/content/eff35518172b971fa47c521ca21c7576d3a245433a669a6765f63b744b7b733a.webm?format=png';
-  let updated = 0, skipped = 0, failed = 0;
+  let updated = 0, reposted = 0, skipped = 0, failed = 0;
   for (const [id, quest] of knownQuests) {
     if (!quest.reward?.toLowerCase().includes('orb')) continue;
     const updatedQuest = { ...quest, rewardImageUrl: ORBS_URL };
     knownQuests.set(id, updatedQuest);
-    for (const gm of (quest.guildMessages || [])) {
+    const guildMessages = quest.guildMessages || [];
+    for (let i = 0; i < guildMessages.length; i++) {
+      const gm = guildMessages[i];
       try {
         const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
         if (style !== 'components') continue;
-        // Only patch messages that are already Components V2 (flags & 32768)
         const ch = await client.channels.fetch(gm.channelId).catch(() => null);
         if (!ch) { skipped++; continue; }
-        const msg = await ch.messages.fetch(gm.messageId).catch(() => null);
-        if (!msg) { skipped++; continue; }
-        if (!(msg.flags.bitfield & 32768)) { skipped++; continue; }
         const updatedPayload = buildQuestPayload(updatedQuest, 'components');
-        await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
-        updated++;
+        try {
+          await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
+          updated++;
+        } catch (patchErr) {
+          const isEmbedMsg = patchErr.message?.includes('Invalid Form Body') || patchErr.code === 50035;
+          if (!isEmbedMsg) throw patchErr;
+          // Old embed message — delete it and send a fresh components message
+          try {
+            await client.rest.delete(Routes.channelMessage(gm.channelId, gm.messageId));
+          } catch (_) { /* ignore delete errors */ }
+          const result = await client.rest.post(Routes.channelMessages(gm.channelId), { body: updatedPayload });
+          // Update stored messageId
+          guildMessages[i] = { ...gm, messageId: result.id };
+          reposted++;
+        }
         await new Promise(r => setTimeout(r, 600));
       } catch (e) {
         console.error(`⚠️ fix_orbs: ${gm.messageId}:`, e.message, e.rawError ? JSON.stringify(e.rawError) : '');
         failed++;
       }
     }
+    // Persist updated guildMessages for this quest
+    const stored = knownQuests.get(id);
+    if (stored) knownQuests.set(id, { ...stored, guildMessages });
   }
   saveData();
-  console.log(`🔮 Orbs fix: ${updated} updated, ${skipped} skipped (not components), ${failed} failed`);
+  console.log(`🔮 Orbs fix: ${updated} patched, ${reposted} reposted, ${skipped} skipped, ${failed} failed`);
 }
 
 async function registerSlashCommands() {
