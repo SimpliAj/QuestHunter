@@ -186,8 +186,7 @@ function buildCdnUrl(questId, assetPath) {
   return `https://cdn.discordapp.com/quests/${questId}/${assetPath}`;
 }
 
-const ORBS_GIF = 'https://i.imgur.com/v2Ra1GP.png';
-//const ORBS_GIF = 'https://cdn3.emoji.gg/emojis/44565-orbs-animated.gif';
+const ORBS_GIF = 'https://cdn.discordapp.com/assets/content/eff35518172b971fa47c521ca21c7576d3a245433a669a6765f63b744b7b733a.webm?format=png';
 
 const IMAGE_EXTS = /\.(png|jpg|jpeg|gif|webp)$/i;
 
@@ -206,7 +205,7 @@ async function getImageUrl(questId, config) {
     // Fall through to static fallback if conversion fails
   }
 
-  // 3. Orbs reward → Orbs image
+  // 3. Orbs reward → Discord orbs icon
   if (r?.orb_quantity != null) return ORBS_GIF;
 
   // 4. Static fallback from assets
@@ -228,13 +227,14 @@ function getHeroImageUrlWide(questId, config) {
 async function getRewardImageUrl(questId, config) {
   const rewards = config.rewards_config?.rewards || config.rewards || [];
   const r = rewards[0];
-  if (r?.orb_quantity != null) return ORBS_GIF;
+  // Reward asset from Discord CDN takes priority
   if (r?.asset && IMAGE_EXTS.test(r.asset)) return buildCdnUrl(questId, r.asset);
   if (r?.asset && /\.mp4$/i.test(r.asset)) {
     const mp4Url = buildCdnUrl(questId, r.asset);
     const gifUrl = await convertMp4ToGif(mp4Url, `${questId}_reward`);
     if (gifUrl) return gifUrl;
   }
+  if (r?.orb_quantity != null) return ORBS_GIF;
   return null;
 }
 
