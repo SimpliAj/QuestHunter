@@ -3183,7 +3183,16 @@ app.post('/webhook/quests', async (req, res) => {
       const activeKnown = [...knownQuests.values()];
       const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && quest.game && activeKnown
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt && q.game === quest.game));
-      const isNew = !knownById && !knownByAllIds && !isDuplicateByName && !isDuplicateByRewardExpiry;
+      // 5. Language-variant dedup: rewards differ per locale but share English key in parens e.g. "(Avatar Decoration)"
+      const extractRewardKey = r => { const m = r && r.match(/\(([^)]+)\)\s*$/); return m ? m[1].trim().toLowerCase() : null; };
+      const rewardKey = extractRewardKey(quest.reward);
+      const isDuplicateByRewardKey = !!(rewardKey && quest.expiresAt && quest.game && activeKnown.some(q => {
+        if (!q.game || q.game !== quest.game || !q.expiresAt) return false;
+        const qKey = extractRewardKey(q.reward);
+        if (!qKey || qKey !== rewardKey) return false;
+        return Math.abs(new Date(q.expiresAt) - new Date(quest.expiresAt)) / 86400000 <= 3;
+      }));
+      const isNew = !knownById && !knownByAllIds && !isDuplicateByName && !isDuplicateByRewardExpiry && !isDuplicateByRewardKey;
       
       if (isNew) {
         newQuestCount++;
@@ -3286,9 +3295,14 @@ app.post('/webhook/quests', async (req, res) => {
           console.log(`  ⏸️  Skipping notification (bot still initializing)`);
         }
       } else {
-        if (isDuplicateByRewardExpiry && !knownQuests.has(quest.id) && !isDuplicateByName) {
+        if ((isDuplicateByRewardExpiry || isDuplicateByRewardKey) && !knownQuests.has(quest.id) && !isDuplicateByName) {
           // Find original quest and append this language variant's ID
-          const original = [...knownQuests.values()].find(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt);
+          const original = [...knownQuests.values()].find(q => {
+            if (isDuplicateByRewardExpiry) return q.reward === quest.reward && q.expiresAt === quest.expiresAt;
+            const qKey = extractRewardKey(q.reward);
+            return qKey && qKey === rewardKey && q.game === quest.game &&
+              Math.abs(new Date(q.expiresAt) - new Date(quest.expiresAt)) / 86400000 <= 3;
+          });
           if (original) {
             const updatedAllIds = [...new Set([...(original.allIds || [original.id]), quest.id])];
             // Merge new region into regions list
