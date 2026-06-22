@@ -1989,7 +1989,7 @@ function buildQuestPayload(questData, style, pingContent = '') {
     }
 
     const containerComponents = [
-      { type: 10, content: `**New Quest — [${questData.name}](${questLink})**` },
+      { type: 10, content: `${pingContent ? pingContent : ''}**New Quest — [${questData.name}](${questLink})**` },
       ...(heroThumb ? [{ type: 12, items: [{ media: { url: heroThumb } }] }] : []),
       { type: 14, divider: true, spacing: 1 },
       { type: 10, content: `## Quest Info\n${questInfoLines.join('\n')}` },
@@ -2002,7 +2002,7 @@ function buildQuestPayload(questData, style, pingContent = '') {
       { type: 14, divider: true, spacing: 1 },
       ...buttonRows,
     ];
-    return { content: pingContent || undefined, flags: 32768, components: [{ type: 17, accent_color: 0x5865F2, components: containerComponents }] };
+    return { flags: 32768, components: [{ type: 17, accent_color: 0x5865F2, components: containerComponents }] };
   }
 
   // Default style
@@ -3190,7 +3190,9 @@ app.post('/webhook/quests', async (req, res) => {
         if (!q.game || q.game !== quest.game || !q.expiresAt) return false;
         const qKey = extractRewardKey(q.reward);
         if (!qKey || qKey !== rewardKey) return false;
-        return Math.abs(new Date(q.expiresAt) - new Date(quest.expiresAt)) / 86400000 <= 3;
+        // Require exact expiry match — lang variants of the same quest always share identical expiresAt
+        // Loose tolerance previously caused false merges (e.g. RuneScape + Hero Wars both game="Discord")
+        return q.expiresAt === quest.expiresAt;
       }));
       const isNew = !knownById && !knownByAllIds && !isDuplicateByName && !isDuplicateByRewardExpiry && !isDuplicateByRewardKey;
       
@@ -3313,7 +3315,10 @@ app.post('/webhook/quests', async (req, res) => {
             const updatedAllLinks = [...(original.allLinks || []), ...newLinks];
             const updatedOriginal = { ...original, allIds: updatedAllIds, regions: updatedRegions, allLinks: updatedAllLinks };
             knownQuests.set(original.id, updatedOriginal);
+            // Mark variant ID as handled so it's not re-processed every scan
+            everSentIds.add(String(quest.id));
             saveData();
+            saveEverSentIds();
             console.log(`  🌍 LANG-VARIANT: ${quest.name} → added to quest ${original.id} (${updatedAllIds.length} links, regions: ${updatedRegions.join(',')})`);
 
             // Edit existing Discord notification messages to show updated link buttons + regions
@@ -3326,7 +3331,17 @@ app.post('/webhook/quests', async (req, res) => {
                 if (style === 'components') {
                   await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
                 } else {
-                  await msg.edit(updatedPayload);
+                  try {
+                    await msg.edit(updatedPayload);
+                  } catch (editErr) {
+                    if (editErr.message && editErr.message.includes('COMPONENTS_V2')) {
+                      // Message was originally sent as Components V2 — edit with matching format
+                      const compPayload = buildQuestPayload(updatedOriginal, 'components');
+                      await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: compPayload });
+                    } else {
+                      throw editErr;
+                    }
+                  }
                 }
                 console.log(`  ✏️  Updated message ${gm.messageId} in channel ${gm.channelId}`);
               } catch (e) {
