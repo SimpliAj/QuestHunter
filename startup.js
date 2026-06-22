@@ -20,13 +20,15 @@ if (process.platform === 'linux') {
 // Start questScraper
 const scraper = spawn('node', [path.join(__dirname, 'questScraper.js')], {
   stdio: 'inherit',
-  detached: false
+  detached: false,
+  cwd: __dirname
 });
 
 // Start index (Discord bot)
 const bot = spawn('node', [path.join(__dirname, 'index.js')], {
   stdio: 'inherit',
-  detached: false
+  detached: false,
+  cwd: __dirname
 });
 
 // Handle process errors
