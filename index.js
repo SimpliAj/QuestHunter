@@ -3143,6 +3143,9 @@ app.post('/webhook/quests', async (req, res) => {
               reward: quest.reward,
               tasks: quest.tasks || [],
               imageUrl: quest.imageUrl || null,
+              heroImageUrl: quest.heroImageUrl || null,
+              rewardImageUrl: quest.rewardImageUrl || null,
+              gameLogo: quest.gameLogo || null,
               type: quest.type,
               startsAt: quest.startsAt || null,
               expiresAt: quest.expiresAt,
@@ -3423,6 +3426,15 @@ app.post('/webhook/quests', async (req, res) => {
           if (quest.imageUrl && existingQuest.imageUrl !== quest.imageUrl) {
             console.log(`  🖼️  Updated imageUrl for ${quest.name}`);
             existingQuest.imageUrl = quest.imageUrl;
+          }
+          if (quest.heroImageUrl && !existingQuest.heroImageUrl) {
+            existingQuest.heroImageUrl = quest.heroImageUrl;
+          }
+          if (quest.rewardImageUrl && !existingQuest.rewardImageUrl) {
+            existingQuest.rewardImageUrl = quest.rewardImageUrl;
+          }
+          if (quest.gameLogo && !existingQuest.gameLogo) {
+            existingQuest.gameLogo = quest.gameLogo;
           }
           if (quest.tasks?.length > 0) {
             existingQuest.tasks = quest.tasks;
