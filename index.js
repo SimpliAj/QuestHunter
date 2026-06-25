@@ -386,8 +386,8 @@ client.once('ready', () => {
   // Start scanning for quests
   startQuestScanner();
 
-  // One-time fix: update orbs quest messages that have old/missing reward image
-  setTimeout(() => fixOrbsMessages(), 5000);
+  // Fix: update all component-style messages missing hero/reward images
+  setTimeout(() => fixMissingImages(), 5000);
 });
 
 async function fixOrbsMessages() {
@@ -423,6 +423,97 @@ async function fixOrbsMessages() {
   await processQuestMap(expiredQuests);
   saveData();
   console.log(`🔮 Orbs fix: ${updated} patched, ${skipped} skipped, ${failed} failed`);
+}
+
+async function fixMissingImages() {
+  const ORBS_URL = 'https://cdn.discordapp.com/assets/content/eff35518172b971fa47c521ca21c7576d3a245433a669a6765f63b744b7b733a.webm?format=png';
+  const IMG_EXTS = /\.(png|jpg|jpeg|gif|webp)$/i;
+  const buildCdn = (qid, asset) => {
+    if (!asset) return null;
+    return asset.startsWith('quests/') ? `https://cdn.discordapp.com/${asset}` : `https://cdn.discordapp.com/quests/${qid}/${asset}`;
+  };
+  let gifCache = {};
+  try {
+    const cachePath = path.join(__dirname, 'data', 'gif_cache.json');
+    if (fs.existsSync(cachePath)) gifCache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+  } catch (e) {}
+
+  // Fetch all quest configs from API sources to get asset info
+  let configMap = new Map();
+  try {
+    const [apiResp, ghResp] = await Promise.allSettled([
+      axios.get('https://api.discordquest.com/api/quests', { timeout: 15000 }),
+      axios.get('https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json', { timeout: 15000 }),
+    ]);
+    for (const res of [apiResp, ghResp]) {
+      if (res.status === 'fulfilled' && Array.isArray(res.value.data)) {
+        for (const q of res.value.data) {
+          if (q.id && !configMap.has(String(q.id))) configMap.set(String(q.id), q.config);
+        }
+      }
+    }
+    console.log(`🔮 fixMissingImages: loaded ${configMap.size} quest configs from API`);
+  } catch (e) {
+    console.error('⚠️ fixMissingImages: failed to fetch configs:', e.message);
+    return;
+  }
+
+  let updated = 0, skipped = 0, failed = 0;
+
+  async function processQuestMap(questMap) {
+    for (const [id, quest] of questMap) {
+      const needsHero = !quest.heroImageUrl;
+      const needsReward = !quest.rewardImageUrl;
+      if (!needsHero && !needsReward) continue;
+
+      const cfg = configMap.get(String(id));
+      let heroImageUrl = quest.heroImageUrl || null;
+      let rewardImageUrl = quest.rewardImageUrl || null;
+
+      if (cfg) {
+        if (needsHero && cfg.assets?.hero) {
+          heroImageUrl = buildCdn(id, cfg.assets.hero);
+        }
+        if (needsReward) {
+          const r = (cfg.rewards_config?.rewards || cfg.rewards || [])[0];
+          if (r?.asset && IMG_EXTS.test(r.asset)) rewardImageUrl = buildCdn(id, r.asset);
+          else if (/\.mp4$/i.test(r?.asset || '')) rewardImageUrl = gifCache[`${id}_reward`] || null;
+          else if (r?.orb_quantity != null) rewardImageUrl = ORBS_URL;
+        }
+      } else if (needsReward && quest.reward?.toLowerCase().includes('orb')) {
+        rewardImageUrl = ORBS_URL;
+      } else if (needsReward && gifCache[`${id}_reward`]) {
+        rewardImageUrl = gifCache[`${id}_reward`];
+      }
+
+      if (!heroImageUrl && !rewardImageUrl) continue;
+
+      const updatedQuest = { ...quest, heroImageUrl, rewardImageUrl };
+      questMap.set(id, updatedQuest);
+
+      for (const gm of (quest.guildMessages || [])) {
+        try {
+          const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
+          if (style !== 'components') { skipped++; continue; }
+          const ch = await client.channels.fetch(gm.channelId).catch(() => null);
+          if (!ch) { skipped++; continue; }
+          const updatedPayload = buildQuestPayload(updatedQuest, 'components');
+          await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
+          updated++;
+          await new Promise(r => setTimeout(r, 600));
+        } catch (e) {
+          if (e.message?.includes('Invalid Form Body') || e.code === 50035 || e.code === 10008) { skipped++; continue; }
+          console.error(`⚠️ fixMissingImages: ${gm.messageId}:`, e.message);
+          failed++;
+        }
+      }
+    }
+  }
+
+  await processQuestMap(knownQuests);
+  await processQuestMap(expiredQuests);
+  saveData();
+  console.log(`🔮 fixMissingImages: ${updated} patched, ${skipped} skipped, ${failed} failed`);
 }
 
 async function registerSlashCommands() {
@@ -3128,6 +3219,9 @@ app.post('/webhook/quests', async (req, res) => {
               reward: quest.reward,
               tasks: quest.tasks?.length > 0 ? quest.tasks : (old?.tasks || []),
               imageUrl: quest.imageUrl || old?.imageUrl || null,
+              heroImageUrl: quest.heroImageUrl || old?.heroImageUrl || null,
+              rewardImageUrl: quest.rewardImageUrl || old?.rewardImageUrl || null,
+              gameLogo: quest.gameLogo || old?.gameLogo || null,
               startsAt: quest.startsAt || old?.startsAt || null,
               expiresAt: quest.expiresAt,
               allIds: allIds,
@@ -3166,6 +3260,8 @@ app.post('/webhook/quests', async (req, res) => {
             if (quest.imageUrl && existingQuest.imageUrl !== quest.imageUrl) existingQuest.imageUrl = quest.imageUrl;
             if (quest.tasks?.length > 0) existingQuest.tasks = quest.tasks;
             if (quest.game && !existingQuest.game) existingQuest.game = quest.game;
+            if (quest.heroImageUrl && !existingQuest.heroImageUrl) existingQuest.heroImageUrl = quest.heroImageUrl;
+            if (quest.rewardImageUrl && !existingQuest.rewardImageUrl) existingQuest.rewardImageUrl = quest.rewardImageUrl;
           }
         }
         continue;

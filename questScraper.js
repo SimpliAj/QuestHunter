@@ -321,7 +321,15 @@ async function parseActiveQuests(allQuests) {
       const existing = active[existingIdx];
       if (!existing.allIds.includes(String(entry.id))) {
         existing.allIds.push(String(entry.id));
-        existing.allLinks.push({ id: String(entry.id), flag: code });
+        const regionFlag = Array.isArray(entry.regions) && entry.regions.length > 0 ? entry.regions[0] : code;
+        existing.allLinks.push({ id: String(entry.id), flag: regionFlag });
+        // Collect regions from all language variants
+        if (Array.isArray(entry.regions)) {
+          if (!existing.regions) existing.regions = [];
+          for (const r of entry.regions) {
+            if (!existing.regions.includes(r)) existing.regions.push(r);
+          }
+        }
         // Prefer English variant for display: English app link > ASCII name > first seen
         const existingIsEnLink = existing._isEnglishLink;
         if (isEnglishLink && !existingIsEnLink) {
@@ -353,7 +361,7 @@ async function parseActiveQuests(allQuests) {
     active.push({
       id: entry.id,
       allIds: [String(entry.id)],
-      allLinks: [{ id: String(entry.id), flag: code }],
+      allLinks: [{ id: String(entry.id), flag: Array.isArray(entry.regions) && entry.regions.length > 0 ? entry.regions[0] : code }],
       name,
       game,
       publisher,
