@@ -388,6 +388,8 @@ client.once('ready', () => {
 
   // Fix: update all component-style messages missing hero/reward images
   setTimeout(() => fixMissingImages(), 5000);
+  // Re-run periodically to catch quests that got images after initial send
+  setInterval(() => fixMissingImages(), 2 * 60 * 60 * 1000);
 });
 
 async function fixOrbsMessages() {
@@ -464,7 +466,8 @@ async function fixMissingImages() {
     for (const [id, quest] of questMap) {
       const needsHero = !quest.heroImageUrl;
       const needsReward = !quest.rewardImageUrl;
-      if (!needsHero && !needsReward) continue;
+      const messagesNeedPatch = quest.messagesHaveImages !== true && (quest.heroImageUrl || quest.rewardImageUrl);
+      if (!needsHero && !needsReward && !messagesNeedPatch) continue;
 
       const cfg = configMap.get(String(id));
       let heroImageUrl = quest.heroImageUrl || null;
@@ -507,6 +510,7 @@ async function fixMissingImages() {
           failed++;
         }
       }
+      questMap.set(id, { ...updatedQuest, messagesHaveImages: true });
     }
   }
 
@@ -2170,6 +2174,15 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
     const payload = buildQuestPayload(questData, notificationStyle, pingContent);
     let message;
     if (notificationStyle === 'components') {
+      // Discord rejects messages combining `content` with the Components V2
+      // flag, so buildQuestPayload's V2 branch can't put the role mention in
+      // the actual message content — it only ever ends up inside a type:10
+      // text component, which Discord renders but does NOT dispatch a real
+      // ping/notification for. Send the ping as its own plain-content
+      // message first so it actually notifies, then the V2 quest message.
+      if (pingContent) {
+        await client.rest.post(Routes.channelMessages(channelId), { body: { content: pingContent.trim() } }).catch(() => {});
+      }
       const result = await client.rest.post(Routes.channelMessages(channelId), { body: payload });
       message = { id: result.id };
     } else {
@@ -2199,6 +2212,7 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
       allIds: questData.allIds?.length > (existing.allIds?.length || 0) ? questData.allIds.map(String) : (existing.allIds || [questData.id]),
       allLinks: questData.allLinks?.length > (existing.allLinks?.length || 0) ? questData.allLinks : (existing.allLinks || []),
       guildMessages: [...(existing.guildMessages || []), { guildId, channelId, messageId: message.id }],
+      messagesHaveImages: !!(questData.heroImageUrl || questData.rewardImageUrl),
       notified: true,
     });
 
@@ -3464,16 +3478,20 @@ app.post('/webhook/quests', async (req, res) => {
               };
               knownQuests.set(String(quest.id), merged);
               // Patch existing components-style messages with updated images
+              let patchedCount = 0;
               for (const gm of (existingQ.guildMessages || [])) {
                 try {
                   const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
                   if (style !== 'components') continue;
                   const updatedPayload = buildQuestPayload(merged, 'components');
                   await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload }).catch(() => {});
+                  patchedCount++;
                 } catch (_) {}
               }
+              // Mark messagesHaveImages only after patch attempt
+              knownQuests.set(String(quest.id), { ...merged, messagesHaveImages: true });
               saveData();
-              console.log(`  🖼️  Updated images for existing quest: ${quest.name}`);
+              console.log(`  🖼️  Updated images for existing quest: ${quest.name} (patched ${patchedCount} messages)`);
             } else {
               console.log(`  ℹ️  EXISTING: ${quest.name}`);
             }
