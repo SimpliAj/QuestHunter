@@ -2084,7 +2084,7 @@ function buildQuestPayload(questData, style, pingContent = '') {
     }
 
     const containerComponents = [
-      { type: 10, content: `${pingContent ? pingContent : ''}**New Quest — [${questData.name}](${questLink})**` },
+      { type: 10, content: `**New Quest — [${questData.name}](${questLink})**` },
       ...(heroThumb ? [{ type: 12, items: [{ media: { url: heroThumb } }] }] : []),
       { type: 14, divider: true, spacing: 1 },
       { type: 10, content: `## Quest Info\n${questInfoLines.join('\n')}` },
