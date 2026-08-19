@@ -3209,6 +3209,60 @@ app.post('/webhook/quests', async (req, res) => {
       if (everSent) {
         // Still track in knownQuests for expiry detection — just skip notification
         if (!knownQuests.has(String(quest.id))) {
+          // Bug fix (2026-08-19): before assuming this is a stale/expired quest
+          // re-appearing, check whether one of its OTHER allIds is a LIVE known
+          // entry. This happens when a quest was first sent under a bad
+          // localized name (e.g. wrong-locale title) and a better EN/ASCII
+          // variant merges in later — the merged object's primary `quest.id`
+          // is new, so `knownQuests.has(quest.id)` is false, but everSentIds
+          // already contains the old variant's id, making `everSent` true.
+          // Without this check that silently created a second, never-sent
+          // orphan record instead of refreshing the already-tracked one
+          // (see NBA 2K27 Content Drop / Phantom Blade Zero incident).
+          const liveKnownId = allIds.find(id => id !== String(quest.id) && knownQuests.has(id));
+          if (liveKnownId) {
+            const original = knownQuests.get(liveKnownId);
+            const updatedAllIds = [...new Set([...(original.allIds || [liveKnownId]), ...allIds])];
+            const updatedRegions = [...new Set([...(original.regions || []), ...(quest.regions || [])])];
+            const existingLinkIds = new Set((original.allLinks || []).map(l => String(l.id)));
+            const newLinks = (quest.allLinks || []).filter(l => !existingLinkIds.has(String(l.id)));
+            const updatedAllLinks = [...(original.allLinks || []), ...newLinks];
+            const isAscii = s => /^[\x20-\x7E]+$/.test(s || '');
+            const preferNew = isAscii(quest.name) && isAscii(quest.game) && !(isAscii(original.name) && isAscii(original.game));
+            const updatedOriginal = {
+              ...original,
+              allIds: updatedAllIds,
+              regions: updatedRegions,
+              allLinks: updatedAllLinks,
+              name: preferNew ? quest.name : original.name,
+              game: preferNew ? (quest.game || original.game) : original.game,
+              reward: preferNew ? quest.reward : original.reward,
+            };
+            knownQuests.set(liveKnownId, updatedOriginal);
+            for (const id of allIds) everSentIds.add(id);
+            saveEverSentIds();
+            saveData();
+            console.log(`  🌍 LANG-VARIANT (via everSent-merge): ${quest.name} → ${liveKnownId}${preferNew ? ' (name/reward refreshed)' : ''}`);
+            if (preferNew) {
+              for (const gm of (updatedOriginal.guildMessages || [])) {
+                try {
+                  const ch = await client.channels.fetch(gm.channelId);
+                  const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
+                  const updatedPayload = buildQuestPayload(updatedOriginal, style);
+                  if (style === 'components') {
+                    await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
+                  } else {
+                    const msg = await ch.messages.fetch(gm.messageId);
+                    await msg.edit(updatedPayload);
+                  }
+                } catch (e) {
+                  console.error(`  ⚠️  Could not edit message after name refresh:`, e.message);
+                }
+              }
+            }
+            saveData();
+            continue;
+          }
           // Check if it's in expiredQuests and needs re-activation
           let expiredId = null;
           if (expiredQuests.has(String(quest.id))) {
