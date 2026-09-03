@@ -3209,6 +3209,60 @@ app.post('/webhook/quests', async (req, res) => {
       if (everSent) {
         // Still track in knownQuests for expiry detection — just skip notification
         if (!knownQuests.has(String(quest.id))) {
+          // Bug fix (2026-08-19): before assuming this is a stale/expired quest
+          // re-appearing, check whether one of its OTHER allIds is a LIVE known
+          // entry. This happens when a quest was first sent under a bad
+          // localized name (e.g. wrong-locale title) and a better EN/ASCII
+          // variant merges in later — the merged object's primary `quest.id`
+          // is new, so `knownQuests.has(quest.id)` is false, but everSentIds
+          // already contains the old variant's id, making `everSent` true.
+          // Without this check that silently created a second, never-sent
+          // orphan record instead of refreshing the already-tracked one
+          // (see NBA 2K27 Content Drop / Phantom Blade Zero incident).
+          const liveKnownId = allIds.find(id => id !== String(quest.id) && knownQuests.has(id));
+          if (liveKnownId) {
+            const original = knownQuests.get(liveKnownId);
+            const updatedAllIds = [...new Set([...(original.allIds || [liveKnownId]), ...allIds])];
+            const updatedRegions = [...new Set([...(original.regions || []), ...(quest.regions || [])])];
+            const existingLinkIds = new Set((original.allLinks || []).map(l => String(l.id)));
+            const newLinks = (quest.allLinks || []).filter(l => !existingLinkIds.has(String(l.id)));
+            const updatedAllLinks = [...(original.allLinks || []), ...newLinks];
+            const isAscii = s => /^[\x20-\x7E]+$/.test(s || '');
+            const preferNew = isAscii(quest.name) && isAscii(quest.game) && !(isAscii(original.name) && isAscii(original.game));
+            const updatedOriginal = {
+              ...original,
+              allIds: updatedAllIds,
+              regions: updatedRegions,
+              allLinks: updatedAllLinks,
+              name: preferNew ? quest.name : original.name,
+              game: preferNew ? (quest.game || original.game) : original.game,
+              reward: preferNew ? quest.reward : original.reward,
+            };
+            knownQuests.set(liveKnownId, updatedOriginal);
+            for (const id of allIds) everSentIds.add(id);
+            saveEverSentIds();
+            saveData();
+            console.log(`  🌍 LANG-VARIANT (via everSent-merge): ${quest.name} → ${liveKnownId}${preferNew ? ' (name/reward refreshed)' : ''}`);
+            if (preferNew) {
+              for (const gm of (updatedOriginal.guildMessages || [])) {
+                try {
+                  const ch = await client.channels.fetch(gm.channelId);
+                  const style = guildSettings.get(gm.guildId)?.notificationStyle || 'default';
+                  const updatedPayload = buildQuestPayload(updatedOriginal, style);
+                  if (style === 'components') {
+                    await client.rest.patch(Routes.channelMessage(gm.channelId, gm.messageId), { body: updatedPayload });
+                  } else {
+                    const msg = await ch.messages.fetch(gm.messageId);
+                    await msg.edit(updatedPayload);
+                  }
+                } catch (e) {
+                  console.error(`  ⚠️  Could not edit message after name refresh:`, e.message);
+                }
+              }
+            }
+            saveData();
+            continue;
+          }
           // Check if it's in expiredQuests and needs re-activation
           let expiredId = null;
           if (expiredQuests.has(String(quest.id))) {
@@ -3220,8 +3274,16 @@ app.post('/webhook/quests', async (req, res) => {
           }
           if (expiredId !== null) {
             const old = expiredQuests.get(expiredId);
-            // Only re-track if expiry date actually changed (real re-activation, not API flicker)
-            if (old && old.expiresAt === quest.expiresAt) {
+            // Only re-track if expiry date actually changed (real re-activation, not API flicker).
+            // Exception: a quest whose expiry date has NOT passed yet was expired by the
+            // missedScans fallback, i.e. a false expiry. Refusing to re-track those stranded
+            // them permanently — they stayed out of knownQuests forever, stopped getting
+            // message updates and could never expire properly (Student Perks / NBA 2K27 /
+            // Helldivers 2 sat in expired_quests.json with expiry dates weeks in the future).
+            // The original guard only exists to stop an expire-notification loop on the last
+            // day of a quest, and isQuestActuallyExpired() still covers exactly that case.
+            const falseExpiry = !isQuestActuallyExpired(quest.expiresAt);
+            if (old && old.expiresAt === quest.expiresAt && !falseExpiry) {
               console.log(`  ⏭️  Skipping re-track (same expiresAt, API flicker): ${quest.name}`);
             } else {
             expiredQuests.delete(expiredId);
@@ -3292,14 +3354,21 @@ app.post('/webhook/quests', async (req, res) => {
         .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey
           && q.expiresAt === quest.expiresAt);
       // 4. Same reward + same expiry + same game (catches language variants) — only vs ACTIVE quests
-      // Must also match game to avoid false positives when different quests share reward+expiry
+      // Must also match game to avoid false positives when different quests share reward+expiry.
+      // `game` comes from config.application.name, which is the literal string "Discord" for every
+      // sponsored/video quest (they all live under Discord's own app 545364944258990091). Matching
+      // on that placeholder made every "200 Orbs" quest sharing an expiry date look like a language
+      // variant of the first one, so genuinely new quests were never announced. Only trust `game`
+      // when it actually identifies a game.
+      const isGenericGameName = g => !g || g.trim().toLowerCase() === 'discord';
+      const hasRealGame = !isGenericGameName(quest.game);
       const activeKnown = [...knownQuests.values()];
-      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && quest.game && activeKnown
+      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && hasRealGame && activeKnown
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt && q.game === quest.game));
       // 5. Language-variant dedup: rewards differ per locale but share English key in parens e.g. "(Avatar Decoration)"
       const extractRewardKey = r => { const m = r && r.match(/\(([^)]+)\)\s*$/); return m ? m[1].trim().toLowerCase() : null; };
       const rewardKey = extractRewardKey(quest.reward);
-      const isDuplicateByRewardKey = !!(rewardKey && quest.expiresAt && quest.game && activeKnown.some(q => {
+      const isDuplicateByRewardKey = !!(rewardKey && quest.expiresAt && hasRealGame && activeKnown.some(q => {
         if (!q.game || q.game !== quest.game || !q.expiresAt) return false;
         const qKey = extractRewardKey(q.reward);
         if (!qKey || qKey !== rewardKey) return false;
