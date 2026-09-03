@@ -263,22 +263,6 @@ function detectLanguageCode(name) {
   return null; // unknown — caller uses fallback label
 }
 
-// Strip protocol, www, locale subdomain and query string so that locale variants of the
-// same advertiser URL (t-mobile.com vs es.t-mobile.com) compare equal, while genuinely
-// different advertisers (marvelsnap.com vs apple.com) stay distinct.
-function normalizeCampaignLink(url) {
-  if (!url) return '';
-  return String(url)
-    .trim()
-    .split('?')[0]
-    .split('#')[0]
-    .replace(/^https?:\/\//i, '')
-    .replace(/^www\./i, '')
-    .replace(/^[a-z]{2}(?:-[a-z]{2})?\./i, '')
-    .replace(/\/+$/, '')
-    .toLowerCase();
-}
-
 async function parseActiveQuests(allQuests) {
   const now = new Date();
   // Sort newest starts_at first so real/recent quests take priority over permanent demo quests
@@ -322,16 +306,23 @@ async function parseActiveQuests(allQuests) {
     // one post, so only one of them was ever announced). Narrow the key with the fields
     // that real language variants always share: same campaign start day, same reward and
     // same advertiser link (locale subdomain/query stripped).
+    // Real language/placement variants of one campaign always share the exact same
+    // schedule, the same task types AND targets, and the same reward SKU — they differ
+    // only in localized name, artwork and tracking link. Two separate campaigns from the
+    // same advertiser differ in at least one of those (e.g. MONOPOLY GO! wants a 29s
+    // video and grants a Nitro bonus, MONOPOLY GO wants 39s and grants none).
     const applicationId = config.application?.id || config.application_id;
-    const ctaLinkForKey = config.cta_config?.link || config.application?.link || config.application?.store_link || '';
+    const taskEntries = config.task_config_v2?.tasks || config.task_config?.tasks || {};
+    const taskSignature = Object.entries(taskEntries)
+      .map(([name, t]) => `${name}:${t?.target ?? ''}`)
+      .sort()
+      .join(',');
+    const rewardSkus = (config.rewards_config?.rewards || [])
+      .map(r => r.sku_id)
+      .sort()
+      .join(',');
     const altDedupeKey = applicationId
-      ? [
-          `app:${applicationId}`,
-          config.expires_at,
-          String(config.starts_at).slice(0, 10),
-          reward,
-          normalizeCampaignLink(ctaLinkForKey),
-        ].join('||')
+      ? [`app:${applicationId}`, config.expires_at, config.starts_at, taskSignature, rewardSkus].join('||')
       : null;
 
     // Check both keys — language variants share applicationId+expiresAt even if names differ
