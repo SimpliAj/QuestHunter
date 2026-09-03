@@ -2124,6 +2124,55 @@ function buildQuestPayload(questData, style, pingContent = '') {
   return { content };
 }
 
+// A channel used to be dropped from guildSettings on the FIRST send failure, including
+// 50013 Missing Permissions and 50001 Missing Access. Those are recoverable — an admin
+// moves the bot's role, edits a category overwrite, or Discord hiccups — but the channel
+// was unsubscribed permanently and silently, so the server never received another quest
+// even after the permission was restored. Only a deleted channel (10003) is really gone;
+// permission failures now need to repeat before we give up, and any success resets the
+// counter. Same shape as the missedScans grace period used for expiring quests.
+const CHANNEL_FAIL_THRESHOLD = 10;
+
+function noteChannelFailure(channelId, error) {
+  const deleted = error.code === 10003;
+  const permission = error.code === 50013 || error.code === 50001;
+  if (!deleted && !permission) return;
+
+  for (const [gId, settings] of guildSettings) {
+    const ch = (settings.channels || []).find(c => c.id === channelId);
+    if (ch) {
+      if (deleted) {
+        settings.channels = settings.channels.filter(c => c.id !== channelId);
+        console.log(`  🧹 Removed deleted channel ${channelId} from guild ${gId}`);
+      } else {
+        ch.failCount = (ch.failCount || 0) + 1;
+        if (ch.failCount >= CHANNEL_FAIL_THRESHOLD) {
+          settings.channels = settings.channels.filter(c => c.id !== channelId);
+          console.log(`  🧹 Removed unreachable channel ${channelId} from guild ${gId} after ${ch.failCount} permission failures`);
+        } else {
+          console.log(`  ⚠️  Channel ${channelId} in guild ${gId} unreachable (${ch.failCount}/${CHANNEL_FAIL_THRESHOLD}): ${error.message}`);
+        }
+      }
+      saveData();
+    }
+    if (deleted && settings.channelId === channelId) {
+      delete settings.channelId;
+      console.log(`  🧹 Removed deleted default channel ${channelId} from guild ${gId}`);
+      saveData();
+    }
+  }
+}
+
+function noteChannelSuccess(channelId) {
+  for (const [, settings] of guildSettings) {
+    const ch = (settings.channels || []).find(c => c.id === channelId);
+    if (ch && ch.failCount) {
+      delete ch.failCount;
+      saveData();
+    }
+  }
+}
+
 async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all') {
   try {
     console.log(`  📤 Attempting to send to channel ${channelId} with filter: ${questFilter}`);
@@ -2218,26 +2267,11 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
 
     // Save data after adding quest
     saveData();
-    
+    noteChannelSuccess(channelId);
+
   } catch (error) {
     console.error(`  ❌ Error sending to channel ${channelId}:`, error.message);
-    if (error.code === 10003 || error.code === 50013 || error.code === 50001) {
-      for (const [gId, settings] of guildSettings) {
-        if (settings.channels) {
-          const before = settings.channels.length;
-          settings.channels = settings.channels.filter(ch => ch.id !== channelId);
-          if (settings.channels.length < before) {
-            console.log(`  🧹 Removed stale channel ${channelId} from guild ${gId}`);
-            saveData();
-          }
-        }
-        if (settings.channelId === channelId) {
-          delete settings.channelId;
-          console.log(`  🧹 Removed stale default channel ${channelId} from guild ${gId}`);
-          saveData();
-        }
-      }
-    }
+    noteChannelFailure(channelId, error);
   }
 }
 
@@ -3438,14 +3472,7 @@ app.post('/webhook/quests', async (req, res) => {
                     sentToCount++;
                   } catch (chError) {
                     console.error(`⚠️  Error sending to channel ${ch.id}:`, chError.message);
-                    if (chError.code === 10003 || chError.code === 50013 || chError.code === 50001) {
-                      const s = guildSettings.get(guildId);
-                      if (s?.channels) {
-                        s.channels = s.channels.filter(c => c.id !== ch.id);
-                        console.log(`  🧹 Removed stale channel ${ch.id} from guild ${guildId}`);
-                        saveData();
-                      }
-                    }
+                    noteChannelFailure(ch.id, chError);
                   }
                 }
               }
