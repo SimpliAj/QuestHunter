@@ -421,15 +421,28 @@ async function sendQuestsToBot(quests) {
     console.warn('⚠️  NOTIFICATION_CHANNEL_ID not set');
     return;
   }
-  try {
-    await axios.post(WEBHOOK_URL, {
-      quests,
-      channelId: NOTIFICATION_CHANNEL_ID,
-      timestamp: new Date()
-    }, { timeout: 15000 });
-    console.log('✅ Quests sent to bot successfully');
-  } catch (e) {
-    console.error('❌ Failed to send quests to bot:', e.message);
+  // startup.js spawns this scraper and index.js at the same time, so the initial scan
+  // regularly beat the bot's webhook server to the port and was dropped with
+  // ECONNREFUSED — after every restart the first scan was silently thrown away and
+  // nothing could be announced until the next interval tick.
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await axios.post(WEBHOOK_URL, {
+        quests,
+        channelId: NOTIFICATION_CHANNEL_ID,
+        timestamp: new Date()
+      }, { timeout: 15000 });
+      console.log('✅ Quests sent to bot successfully');
+      return;
+    } catch (e) {
+      const retriable = e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET';
+      if (!retriable || attempt === 5) {
+        console.error('❌ Failed to send quests to bot:', e.message);
+        return;
+      }
+      console.warn(`⚠️  Bot webhook not up yet (${e.code}), retry ${attempt}/4 in 10s...`);
+      await new Promise(r => setTimeout(r, 10000));
+    }
   }
 }
 
