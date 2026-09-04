@@ -263,18 +263,31 @@ function detectLanguageCode(name) {
   return null; // unknown — caller uses fallback label
 }
 
+// discordquest.com moved to `config_version: 2`, which flattens everything that used to
+// live under `entry.config` (starts_at, expires_at, messages, assets, rewards_config,
+// task_config_v2, application, cta_config) straight onto the entry. The GitHub mirror
+// still serves the old nested shape. Reading only `entry.config` silently discarded every
+// single entry from the API the moment it switched, leaving the bot running purely on the
+// mirror — which lags — so nothing that started after the mirror's last update was ever
+// seen. Accept both shapes.
+function getQuestConfig(entry) {
+  if (entry?.config) return entry.config;
+  if (entry?.starts_at && entry?.expires_at) return entry;
+  return null;
+}
+
 async function parseActiveQuests(allQuests) {
   const now = new Date();
   // Sort newest starts_at first so real/recent quests take priority over permanent demo quests
   const sorted = [...allQuests].sort((a, b) =>
-    new Date(b.config?.starts_at || 0) - new Date(a.config?.starts_at || 0)
+    new Date(getQuestConfig(b)?.starts_at || 0) - new Date(getQuestConfig(a)?.starts_at || 0)
   );
   const active = [];
   const seenKeys = new Map();    // name+reward → index in active array
   const seenAltKeys = new Map(); // applicationId+expiresAt → index (catches language variants)
 
   for (const entry of sorted) {
-    const config = entry.config;
+    const config = getQuestConfig(entry);
     if (!config || !config.starts_at || !config.expires_at) continue;
 
     const startsAt = new Date(config.starts_at);
@@ -442,7 +455,16 @@ async function fetchFromSource(url, label) {
     const response = await axios.get(url, { timeout: 15000 });
     const data = response.data;
     if (!Array.isArray(data)) throw new Error('Expected JSON array');
-    console.log(`📦 [${label}] ${data.length} quests loaded`);
+    // A source that returns rows we cannot read is worse than one that fails outright:
+    // it looks healthy in the logs while contributing nothing. This is exactly how the
+    // config_version 2 switch went unnoticed, so shout about it instead of shrugging.
+    const usable = data.filter(e => getQuestConfig(e) !== null).length;
+    console.log(`📦 [${label}] ${data.length} quests loaded (${usable} parseable)`);
+    if (data.length > 0 && usable === 0) {
+      const msg = `[${label}] returned ${data.length} entries but NONE are parseable — the source schema likely changed`;
+      console.error(`❌ ${msg}`);
+      await sendErrorAlert('Quest Source Schema Change', msg, 'critical');
+    }
     return data;
   } catch (e) {
     console.warn(`⚠️  [${label}] Failed: ${e.message}`);
