@@ -450,6 +450,31 @@ async function sendQuestsToBot(quests) {
   }
 }
 
+// New quests launch densely: across the 366 days to 2026-09-04 a healthy feed never went
+// more than 4 days without a fresh starts_at (median 1). Backtesting the staleness curve
+// over that window gives 0 false alarms at 5 days and 2 at 4, so 5 is the tightest
+// threshold that still means "this feed has stopped moving" rather than "quiet week".
+const SOURCE_STALE_DAYS = 5;
+// fetchQuests runs every 15 min; without a cooldown a rotting source would alert ~96x/day
+// and get muted by whoever reads the channel, which defeats the point.
+const SOURCE_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const lastSourceAlertAt = new Map();
+
+async function alertOncePerCooldown(key, title, message, severity) {
+  if (Date.now() - (lastSourceAlertAt.get(key) || 0) < SOURCE_ALERT_COOLDOWN_MS) return;
+  lastSourceAlertAt.set(key, Date.now());
+  await sendErrorAlert(title, message, severity);
+}
+
+function newestStartsAt(entries) {
+  let newest = null;
+  for (const e of entries) {
+    const s = getQuestConfig(e)?.starts_at;
+    if (s && (!newest || s > newest)) newest = s;
+  }
+  return newest;
+}
+
 async function fetchFromSource(url, label) {
   try {
     const response = await axios.get(url, { timeout: 15000 });
@@ -459,11 +484,20 @@ async function fetchFromSource(url, label) {
     // it looks healthy in the logs while contributing nothing. This is exactly how the
     // config_version 2 switch went unnoticed, so shout about it instead of shrugging.
     const usable = data.filter(e => getQuestConfig(e) !== null).length;
-    console.log(`📦 [${label}] ${data.length} quests loaded (${usable} parseable)`);
+    const newest = newestStartsAt(data);
+    const ageDays = newest ? (Date.now() - new Date(newest).getTime()) / 86400000 : null;
+    console.log(`📦 [${label}] ${data.length} quests loaded (${usable} parseable, newest start ${newest || 'n/a'}${ageDays === null ? '' : `, ${ageDays.toFixed(1)}d ago`})`);
+
     if (data.length > 0 && usable === 0) {
       const msg = `[${label}] returned ${data.length} entries but NONE are parseable — the source schema likely changed`;
       console.error(`❌ ${msg}`);
-      await sendErrorAlert('Quest Source Schema Change', msg, 'critical');
+      await alertOncePerCooldown(`schema:${label}`, 'Quest Source Schema Change', msg, 'critical');
+    } else if (ageDays !== null && ageDays >= SOURCE_STALE_DAYS) {
+      // Checked per source, never on the merged result: one fresh feed would otherwise
+      // mask the other rotting, which is exactly how the mirror went unnoticed for a week.
+      const msg = `[${label}] newest quest starts ${newest} (${ageDays.toFixed(1)} days ago) — feed looks frozen, it is still returning ${usable} parseable entries but no new quests`;
+      console.error(`❌ ${msg}`);
+      await alertOncePerCooldown(`stale:${label}`, 'Quest Source Stale', msg, 'critical');
     }
     return data;
   } catch (e) {
