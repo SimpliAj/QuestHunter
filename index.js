@@ -2038,6 +2038,8 @@ function buildQuestPayload(questData, style, pingContent = '') {
         });
       }
       components = rows;
+    } else {
+      components = [{ type: 1, components: [{ type: 2, style: 5, label: 'Open Quest', url: questLink }] }];
     }
 
     return { content: pingContent || undefined, embeds: [embed], components };
