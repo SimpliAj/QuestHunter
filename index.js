@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { escapeMarkdown, Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { REST } = require('discord.js');
 const { Routes } = require('discord.js');
 const dotenv = require('dotenv');
@@ -29,6 +29,37 @@ const EVER_SENT_FILE = path.join(DATA_DIR, 'ever_sent_ids.json');
 const GUILDS_FILE = path.join(DATA_DIR, 'guild_settings.json');
 const USER_PREFS_FILE = path.join(DATA_DIR, 'user_preferences.json');
 const SHARED_CODES_FILE = path.join(DATA_DIR, 'shared_codes.json');
+
+// --- /share abuse protection: block credentials (Discord tokens, webhooks) and let mods ban users from /share ---
+const SHARE_ALERT_CHANNEL_ID = process.env.SHARE_ALERT_CHANNEL_ID || '1561130454311239811';
+const SHARE_BANS_FILE = path.join(DATA_DIR, 'share_bans.json');
+let shareBans = new Map(); // userId -> { tag, at, by }
+try {
+  if (fs.existsSync(SHARE_BANS_FILE)) shareBans = new Map(JSON.parse(fs.readFileSync(SHARE_BANS_FILE, 'utf-8')));
+} catch (e) { console.error('⚠️  Error loading share bans:', e.message); }
+function saveShareBans() {
+  try { fs.writeFileSync(SHARE_BANS_FILE, JSON.stringify(Array.from(shareBans.entries())), 'utf-8'); }
+  catch (e) { console.error('⚠️  Error saving share bans:', e.message); }
+}
+const SECRET_PATTERNS = [
+  { kind: 'Discord token', re: /[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,40}/g },
+  { kind: 'Discord MFA token', re: /mfa\.[A-Za-z0-9_-]{20,}/g },
+  { kind: 'Discord webhook', re: /discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/[A-Za-z0-9_-]+/gi },
+];
+// Returns { kinds, masked } when the text contains a credential, else null. `masked` never contains the full secret.
+function detectSecret(text) {
+  let masked = String(text);
+  const kinds = [];
+  for (const { kind, re } of SECRET_PATTERNS) {
+    re.lastIndex = 0;
+    if (re.test(masked)) {
+      kinds.push(kind);
+      re.lastIndex = 0;
+      masked = masked.replace(re, (m) => `${m.slice(0, 6)}…[redacted ${m.length} chars]`);
+    }
+  }
+  return kinds.length ? { kinds, masked } : null;
+}
 
 // Channel ID for sharing codes
 const SHARE_CHANNEL_ID = process.env.SHARE_CHANNEL_ID || '1478482005598539959';
@@ -1707,6 +1738,37 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const questId = interaction.options.getString('quest');
       const code = interaction.options.getString('code');
       
+      if (shareBans.has(interaction.user.id)) {
+        return await interaction.reply({ content: '🚫 You have been blocked from using /share.', flags: 64 });
+      }
+      const secret = detectSecret(code);
+      if (secret) {
+        try {
+          const alertChannel = await client.channels.fetch(SHARE_ALERT_CHANNEL_ID);
+          await alertChannel.send({
+            embeds: [{
+              color: 0xE74C3C,
+              title: `🚨 ${secret.kinds.join(' + ')} blocked in /share`,
+              description: 'Someone tried to share a credential. It was NOT posted to the share channel. Content shown in full.',
+              fields: [
+                { name: '👤 User', value: `<@${interaction.user.id}> — ${escapeMarkdown(interaction.user.tag)} (\`${interaction.user.id}\`)`, inline: false },
+                { name: '🏠 Server', value: interaction.guild ? `${escapeMarkdown(interaction.guild.name)} (\`${interaction.guild.id}\`)` : 'DM', inline: false },
+                { name: '📝 Content', value: '```' + String(code).slice(0, 900).replace(/`/g, "'") + '```', inline: false },
+              ],
+              timestamp: new Date().toISOString(),
+            }],
+            components: [{ type: 1, components: [
+              { type: 2, style: 4, label: 'Ban user from /share', custom_id: `shareban_${interaction.user.id}` },
+              { type: 2, style: 3, label: 'Unban', custom_id: `shareunban_${interaction.user.id}` },
+            ] }],
+          });
+        } catch (e) { console.error('share-alert failed:', e.message); }
+        console.log(`🚨 Blocked ${secret.kinds.join('+')} in /share by ${interaction.user.tag} (${interaction.user.id})`);
+        return await interaction.reply({
+          content: '❌ That looks like a Discord token/credential. Never share those — anyone with it can take over the account. If it is yours, reset your password now. This was reported to the moderators.',
+          flags: 64,
+        });
+      }
       // Validate code format
       const validationError = validateCode(code, questId);
       if (validationError) {
@@ -2419,6 +2481,17 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
   try {
+    if (interaction.customId.startsWith('shareban_') || interaction.customId.startsWith('shareunban_')) {
+      if (interaction.channelId !== SHARE_ALERT_CHANNEL_ID || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
+        return await interaction.reply({ content: '❌ Moderators only.', flags: 64 });
+      }
+      const ban = interaction.customId.startsWith('shareban_');
+      const targetId = interaction.customId.split('_')[1];
+      if (ban) shareBans.set(targetId, { at: new Date().toISOString(), by: interaction.user.id });
+      else shareBans.delete(targetId);
+      saveShareBans();
+      return await interaction.reply({ content: ban ? `🚫 <@${targetId}> is now blocked from /share by ${interaction.user.tag}.` : `✅ <@${targetId}> may use /share again.`, allowedMentions: { parse: [] } });
+    }
     if (interaction.customId.startsWith('claim_code_')) {
       const questId = interaction.customId.split('_')[2];
       const messageId = interaction.message.id;
@@ -3711,7 +3784,7 @@ app.get('/health', (req, res) => {
 
 // Start Express server
 const PORT = process.env.WEBHOOK_PORT || 3001;
-app.listen(PORT, () => {
+app.listen(PORT, '127.0.0.1', () => { // scraper posts via localhost; /webhook/quests has no auth, so never expose it
   console.log(`🌐 Webhook server running on http://localhost:${PORT}`);
 });
 
