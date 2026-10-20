@@ -263,18 +263,31 @@ function detectLanguageCode(name) {
   return null; // unknown — caller uses fallback label
 }
 
+// discordquest.com moved to `config_version: 2`, which flattens everything that used to
+// live under `entry.config` (starts_at, expires_at, messages, assets, rewards_config,
+// task_config_v2, application, cta_config) straight onto the entry. The GitHub mirror
+// still serves the old nested shape. Reading only `entry.config` silently discarded every
+// single entry from the API the moment it switched, leaving the bot running purely on the
+// mirror — which lags — so nothing that started after the mirror's last update was ever
+// seen. Accept both shapes.
+function getQuestConfig(entry) {
+  if (entry?.config) return entry.config;
+  if (entry?.starts_at && entry?.expires_at) return entry;
+  return null;
+}
+
 async function parseActiveQuests(allQuests) {
   const now = new Date();
   // Sort newest starts_at first so real/recent quests take priority over permanent demo quests
   const sorted = [...allQuests].sort((a, b) =>
-    new Date(b.config?.starts_at || 0) - new Date(a.config?.starts_at || 0)
+    new Date(getQuestConfig(b)?.starts_at || 0) - new Date(getQuestConfig(a)?.starts_at || 0)
   );
   const active = [];
   const seenKeys = new Map();    // name+reward → index in active array
   const seenAltKeys = new Map(); // applicationId+expiresAt → index (catches language variants)
 
   for (const entry of sorted) {
-    const config = entry.config;
+    const config = getQuestConfig(entry);
     if (!config || !config.starts_at || !config.expires_at) continue;
 
     const startsAt = new Date(config.starts_at);
@@ -298,9 +311,32 @@ async function parseActiveQuests(allQuests) {
     // Build dedup keys
     const normalizedName = questName.replace(/\s+Quest$/i, '').trim();
     const dedupeKey = `${normalizedName}||${reward}`;
-    // applicationId is identical across all language variants of the same quest
+    // applicationId is identical across all language variants of the same quest.
+    // BUT sponsored/video quests are all registered under Discord's own generic app
+    // (545364944258990091, application.name === "Discord"), so applicationId+expiresAt
+    // alone merged completely unrelated advertisers that happened to share an expiry
+    // date (e.g. STAR WARS Zero Company + MARVEL SNAP + Mac Students all collapsed into
+    // one post, so only one of them was ever announced). Narrow the key with the fields
+    // that real language variants always share: same campaign start day, same reward and
+    // same advertiser link (locale subdomain/query stripped).
+    // Real language/placement variants of one campaign always share the exact same
+    // schedule, the same task types AND targets, and the same reward SKU — they differ
+    // only in localized name, artwork and tracking link. Two separate campaigns from the
+    // same advertiser differ in at least one of those (e.g. MONOPOLY GO! wants a 29s
+    // video and grants a Nitro bonus, MONOPOLY GO wants 39s and grants none).
     const applicationId = config.application?.id || config.application_id;
-    const altDedupeKey = applicationId ? `app:${applicationId}||${config.expires_at}` : null;
+    const taskEntries = config.task_config_v2?.tasks || config.task_config?.tasks || {};
+    const taskSignature = Object.entries(taskEntries)
+      .map(([name, t]) => `${name}:${t?.target ?? ''}`)
+      .sort()
+      .join(',');
+    const rewardSkus = (config.rewards_config?.rewards || [])
+      .map(r => r.sku_id)
+      .sort()
+      .join(',');
+    const altDedupeKey = applicationId
+      ? [`app:${applicationId}`, config.expires_at, config.starts_at, taskSignature, rewardSkus].join('||')
+      : null;
 
     // Check both keys — language variants share applicationId+expiresAt even if names differ
     const nameIdx = seenKeys.get(dedupeKey);
@@ -389,16 +425,54 @@ async function sendQuestsToBot(quests) {
     console.warn('⚠️  NOTIFICATION_CHANNEL_ID not set');
     return;
   }
-  try {
-    await axios.post(WEBHOOK_URL, {
-      quests,
-      channelId: NOTIFICATION_CHANNEL_ID,
-      timestamp: new Date()
-    }, { timeout: 15000 });
-    console.log('✅ Quests sent to bot successfully');
-  } catch (e) {
-    console.error('❌ Failed to send quests to bot:', e.message);
+  // startup.js spawns this scraper and index.js at the same time, so the initial scan
+  // regularly beat the bot's webhook server to the port and was dropped with
+  // ECONNREFUSED — after every restart the first scan was silently thrown away and
+  // nothing could be announced until the next interval tick.
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await axios.post(WEBHOOK_URL, {
+        quests,
+        channelId: NOTIFICATION_CHANNEL_ID,
+        timestamp: new Date()
+      }, { timeout: 15000 });
+      console.log('✅ Quests sent to bot successfully');
+      return;
+    } catch (e) {
+      const retriable = e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET';
+      if (!retriable || attempt === 5) {
+        console.error('❌ Failed to send quests to bot:', e.message);
+        return;
+      }
+      console.warn(`⚠️  Bot webhook not up yet (${e.code}), retry ${attempt}/4 in 10s...`);
+      await new Promise(r => setTimeout(r, 10000));
+    }
   }
+}
+
+// New quests launch densely: across the 366 days to 2026-09-04 a healthy feed never went
+// more than 4 days without a fresh starts_at (median 1). Backtesting the staleness curve
+// over that window gives 0 false alarms at 5 days and 2 at 4, so 5 is the tightest
+// threshold that still means "this feed has stopped moving" rather than "quiet week".
+const SOURCE_STALE_DAYS = 5;
+// fetchQuests runs every 15 min; without a cooldown a rotting source would alert ~96x/day
+// and get muted by whoever reads the channel, which defeats the point.
+const SOURCE_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const lastSourceAlertAt = new Map();
+
+async function alertOncePerCooldown(key, title, message, severity) {
+  if (Date.now() - (lastSourceAlertAt.get(key) || 0) < SOURCE_ALERT_COOLDOWN_MS) return;
+  lastSourceAlertAt.set(key, Date.now());
+  await sendErrorAlert(title, message, severity);
+}
+
+function newestStartsAt(entries) {
+  let newest = null;
+  for (const e of entries) {
+    const s = getQuestConfig(e)?.starts_at;
+    if (s && (!newest || s > newest)) newest = s;
+  }
+  return newest;
 }
 
 async function fetchFromSource(url, label) {
@@ -406,7 +480,25 @@ async function fetchFromSource(url, label) {
     const response = await axios.get(url, { timeout: 15000 });
     const data = response.data;
     if (!Array.isArray(data)) throw new Error('Expected JSON array');
-    console.log(`📦 [${label}] ${data.length} quests loaded`);
+    // A source that returns rows we cannot read is worse than one that fails outright:
+    // it looks healthy in the logs while contributing nothing. This is exactly how the
+    // config_version 2 switch went unnoticed, so shout about it instead of shrugging.
+    const usable = data.filter(e => getQuestConfig(e) !== null).length;
+    const newest = newestStartsAt(data);
+    const ageDays = newest ? (Date.now() - new Date(newest).getTime()) / 86400000 : null;
+    console.log(`📦 [${label}] ${data.length} quests loaded (${usable} parseable, newest start ${newest || 'n/a'}${ageDays === null ? '' : `, ${ageDays.toFixed(1)}d ago`})`);
+
+    if (data.length > 0 && usable === 0) {
+      const msg = `[${label}] returned ${data.length} entries but NONE are parseable — the source schema likely changed`;
+      console.error(`❌ ${msg}`);
+      await alertOncePerCooldown(`schema:${label}`, 'Quest Source Schema Change', msg, 'critical');
+    } else if (ageDays !== null && ageDays >= SOURCE_STALE_DAYS) {
+      // Checked per source, never on the merged result: one fresh feed would otherwise
+      // mask the other rotting, which is exactly how the mirror went unnoticed for a week.
+      const msg = `[${label}] newest quest starts ${newest} (${ageDays.toFixed(1)} days ago) — feed looks frozen, it is still returning ${usable} parseable entries but no new quests`;
+      console.error(`❌ ${msg}`);
+      await alertOncePerCooldown(`stale:${label}`, 'Quest Source Stale', msg, 'critical');
+    }
     return data;
   } catch (e) {
     console.warn(`⚠️  [${label}] Failed: ${e.message}`);

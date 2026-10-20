@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { escapeMarkdown, Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { REST } = require('discord.js');
 const { Routes } = require('discord.js');
 const dotenv = require('dotenv');
@@ -29,6 +29,37 @@ const EVER_SENT_FILE = path.join(DATA_DIR, 'ever_sent_ids.json');
 const GUILDS_FILE = path.join(DATA_DIR, 'guild_settings.json');
 const USER_PREFS_FILE = path.join(DATA_DIR, 'user_preferences.json');
 const SHARED_CODES_FILE = path.join(DATA_DIR, 'shared_codes.json');
+
+// --- /share abuse protection: block credentials (Discord tokens, webhooks) and let mods ban users from /share ---
+const SHARE_ALERT_CHANNEL_ID = process.env.SHARE_ALERT_CHANNEL_ID || '1561130454311239811';
+const SHARE_BANS_FILE = path.join(DATA_DIR, 'share_bans.json');
+let shareBans = new Map(); // userId -> { tag, at, by }
+try {
+  if (fs.existsSync(SHARE_BANS_FILE)) shareBans = new Map(JSON.parse(fs.readFileSync(SHARE_BANS_FILE, 'utf-8')));
+} catch (e) { console.error('⚠️  Error loading share bans:', e.message); }
+function saveShareBans() {
+  try { fs.writeFileSync(SHARE_BANS_FILE, JSON.stringify(Array.from(shareBans.entries())), 'utf-8'); }
+  catch (e) { console.error('⚠️  Error saving share bans:', e.message); }
+}
+const SECRET_PATTERNS = [
+  { kind: 'Discord token', re: /[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,40}/g },
+  { kind: 'Discord MFA token', re: /mfa\.[A-Za-z0-9_-]{20,}/g },
+  { kind: 'Discord webhook', re: /discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/[A-Za-z0-9_-]+/gi },
+];
+// Returns { kinds, masked } when the text contains a credential, else null. `masked` never contains the full secret.
+function detectSecret(text) {
+  let masked = String(text);
+  const kinds = [];
+  for (const { kind, re } of SECRET_PATTERNS) {
+    re.lastIndex = 0;
+    if (re.test(masked)) {
+      kinds.push(kind);
+      re.lastIndex = 0;
+      masked = masked.replace(re, (m) => `${m.slice(0, 6)}…[redacted ${m.length} chars]`);
+    }
+  }
+  return kinds.length ? { kinds, masked } : null;
+}
 
 // Channel ID for sharing codes
 const SHARE_CHANNEL_ID = process.env.SHARE_CHANNEL_ID || '1478482005598539959';
@@ -1707,6 +1738,37 @@ https://github.com/SimpliAj/QuestPhantom/blob/main/README.md
       const questId = interaction.options.getString('quest');
       const code = interaction.options.getString('code');
       
+      if (shareBans.has(interaction.user.id)) {
+        return await interaction.reply({ content: '🚫 You have been blocked from using /share.', flags: 64 });
+      }
+      const secret = detectSecret(code);
+      if (secret) {
+        try {
+          const alertChannel = await client.channels.fetch(SHARE_ALERT_CHANNEL_ID);
+          await alertChannel.send({
+            embeds: [{
+              color: 0xE74C3C,
+              title: `🚨 ${secret.kinds.join(' + ')} blocked in /share`,
+              description: 'Someone tried to share a credential. It was NOT posted to the share channel. Content shown in full.',
+              fields: [
+                { name: '👤 User', value: `<@${interaction.user.id}> — ${escapeMarkdown(interaction.user.tag)} (\`${interaction.user.id}\`)`, inline: false },
+                { name: '🏠 Server', value: interaction.guild ? `${escapeMarkdown(interaction.guild.name)} (\`${interaction.guild.id}\`)` : 'DM', inline: false },
+                { name: '📝 Content', value: '```' + String(code).slice(0, 900).replace(/`/g, "'") + '```', inline: false },
+              ],
+              timestamp: new Date().toISOString(),
+            }],
+            components: [{ type: 1, components: [
+              { type: 2, style: 4, label: 'Ban user from /share', custom_id: `shareban_${interaction.user.id}` },
+              { type: 2, style: 3, label: 'Unban', custom_id: `shareunban_${interaction.user.id}` },
+            ] }],
+          });
+        } catch (e) { console.error('share-alert failed:', e.message); }
+        console.log(`🚨 Blocked ${secret.kinds.join('+')} in /share by ${interaction.user.tag} (${interaction.user.id})`);
+        return await interaction.reply({
+          content: '❌ That looks like a Discord token/credential. Never share those — anyone with it can take over the account. If it is yours, reset your password now. This was reported to the moderators.',
+          flags: 64,
+        });
+      }
       // Validate code format
       const validationError = validateCode(code, questId);
       if (validationError) {
@@ -2038,6 +2100,8 @@ function buildQuestPayload(questData, style, pingContent = '') {
         });
       }
       components = rows;
+    } else {
+      components = [{ type: 1, components: [{ type: 2, style: 5, label: 'Open Quest', url: questLink }] }];
     }
 
     return { content: pingContent || undefined, embeds: [embed], components };
@@ -2122,6 +2186,55 @@ function buildQuestPayload(questData, style, pingContent = '') {
     content += questLink;
   }
   return { content };
+}
+
+// A channel used to be dropped from guildSettings on the FIRST send failure, including
+// 50013 Missing Permissions and 50001 Missing Access. Those are recoverable — an admin
+// moves the bot's role, edits a category overwrite, or Discord hiccups — but the channel
+// was unsubscribed permanently and silently, so the server never received another quest
+// even after the permission was restored. Only a deleted channel (10003) is really gone;
+// permission failures now need to repeat before we give up, and any success resets the
+// counter. Same shape as the missedScans grace period used for expiring quests.
+const CHANNEL_FAIL_THRESHOLD = 10;
+
+function noteChannelFailure(channelId, error) {
+  const deleted = error.code === 10003;
+  const permission = error.code === 50013 || error.code === 50001;
+  if (!deleted && !permission) return;
+
+  for (const [gId, settings] of guildSettings) {
+    const ch = (settings.channels || []).find(c => c.id === channelId);
+    if (ch) {
+      if (deleted) {
+        settings.channels = settings.channels.filter(c => c.id !== channelId);
+        console.log(`  🧹 Removed deleted channel ${channelId} from guild ${gId}`);
+      } else {
+        ch.failCount = (ch.failCount || 0) + 1;
+        if (ch.failCount >= CHANNEL_FAIL_THRESHOLD) {
+          settings.channels = settings.channels.filter(c => c.id !== channelId);
+          console.log(`  🧹 Removed unreachable channel ${channelId} from guild ${gId} after ${ch.failCount} permission failures`);
+        } else {
+          console.log(`  ⚠️  Channel ${channelId} in guild ${gId} unreachable (${ch.failCount}/${CHANNEL_FAIL_THRESHOLD}): ${error.message}`);
+        }
+      }
+      saveData();
+    }
+    if (deleted && settings.channelId === channelId) {
+      delete settings.channelId;
+      console.log(`  🧹 Removed deleted default channel ${channelId} from guild ${gId}`);
+      saveData();
+    }
+  }
+}
+
+function noteChannelSuccess(channelId) {
+  for (const [, settings] of guildSettings) {
+    const ch = (settings.channels || []).find(c => c.id === channelId);
+    if (ch && ch.failCount) {
+      delete ch.failCount;
+      saveData();
+    }
+  }
 }
 
 async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all') {
@@ -2218,26 +2331,11 @@ async function notifyNewQuest(channelId, questData, guildId, questFilter = 'all'
 
     // Save data after adding quest
     saveData();
-    
+    noteChannelSuccess(channelId);
+
   } catch (error) {
     console.error(`  ❌ Error sending to channel ${channelId}:`, error.message);
-    if (error.code === 10003 || error.code === 50013 || error.code === 50001) {
-      for (const [gId, settings] of guildSettings) {
-        if (settings.channels) {
-          const before = settings.channels.length;
-          settings.channels = settings.channels.filter(ch => ch.id !== channelId);
-          if (settings.channels.length < before) {
-            console.log(`  🧹 Removed stale channel ${channelId} from guild ${gId}`);
-            saveData();
-          }
-        }
-        if (settings.channelId === channelId) {
-          delete settings.channelId;
-          console.log(`  🧹 Removed stale default channel ${channelId} from guild ${gId}`);
-          saveData();
-        }
-      }
-    }
+    noteChannelFailure(channelId, error);
   }
 }
 
@@ -2383,6 +2481,17 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
   try {
+    if (interaction.customId.startsWith('shareban_') || interaction.customId.startsWith('shareunban_')) {
+      if (interaction.channelId !== SHARE_ALERT_CHANNEL_ID || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
+        return await interaction.reply({ content: '❌ Moderators only.', flags: 64 });
+      }
+      const ban = interaction.customId.startsWith('shareban_');
+      const targetId = interaction.customId.split('_')[1];
+      if (ban) shareBans.set(targetId, { at: new Date().toISOString(), by: interaction.user.id });
+      else shareBans.delete(targetId);
+      saveShareBans();
+      return await interaction.reply({ content: ban ? `🚫 <@${targetId}> is now blocked from /share by ${interaction.user.tag}.` : `✅ <@${targetId}> may use /share again.`, allowedMentions: { parse: [] } });
+    }
     if (interaction.customId.startsWith('claim_code_')) {
       const questId = interaction.customId.split('_')[2];
       const messageId = interaction.message.id;
@@ -3274,8 +3383,16 @@ app.post('/webhook/quests', async (req, res) => {
           }
           if (expiredId !== null) {
             const old = expiredQuests.get(expiredId);
-            // Only re-track if expiry date actually changed (real re-activation, not API flicker)
-            if (old && old.expiresAt === quest.expiresAt) {
+            // Only re-track if expiry date actually changed (real re-activation, not API flicker).
+            // Exception: a quest whose expiry date has NOT passed yet was expired by the
+            // missedScans fallback, i.e. a false expiry. Refusing to re-track those stranded
+            // them permanently — they stayed out of knownQuests forever, stopped getting
+            // message updates and could never expire properly (Student Perks / NBA 2K27 /
+            // Helldivers 2 sat in expired_quests.json with expiry dates weeks in the future).
+            // The original guard only exists to stop an expire-notification loop on the last
+            // day of a quest, and isQuestActuallyExpired() still covers exactly that case.
+            const falseExpiry = !isQuestActuallyExpired(quest.expiresAt);
+            if (old && old.expiresAt === quest.expiresAt && !falseExpiry) {
               console.log(`  ⏭️  Skipping re-track (same expiresAt, API flicker): ${quest.name}`);
             } else {
             expiredQuests.delete(expiredId);
@@ -3346,14 +3463,21 @@ app.post('/webhook/quests', async (req, res) => {
         .some(q => `${(q.name || '').replace(/\s+Quest$/i, '').trim().toLowerCase()}||${(q.reward || '').toLowerCase()}` === normalizedKey
           && q.expiresAt === quest.expiresAt);
       // 4. Same reward + same expiry + same game (catches language variants) — only vs ACTIVE quests
-      // Must also match game to avoid false positives when different quests share reward+expiry
+      // Must also match game to avoid false positives when different quests share reward+expiry.
+      // `game` comes from config.application.name, which is the literal string "Discord" for every
+      // sponsored/video quest (they all live under Discord's own app 545364944258990091). Matching
+      // on that placeholder made every "200 Orbs" quest sharing an expiry date look like a language
+      // variant of the first one, so genuinely new quests were never announced. Only trust `game`
+      // when it actually identifies a game.
+      const isGenericGameName = g => !g || g.trim().toLowerCase() === 'discord';
+      const hasRealGame = !isGenericGameName(quest.game);
       const activeKnown = [...knownQuests.values()];
-      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && quest.game && activeKnown
+      const isDuplicateByRewardExpiry = !!(quest.reward && quest.expiresAt && hasRealGame && activeKnown
         .some(q => q.reward === quest.reward && q.expiresAt === quest.expiresAt && q.game === quest.game));
       // 5. Language-variant dedup: rewards differ per locale but share English key in parens e.g. "(Avatar Decoration)"
       const extractRewardKey = r => { const m = r && r.match(/\(([^)]+)\)\s*$/); return m ? m[1].trim().toLowerCase() : null; };
       const rewardKey = extractRewardKey(quest.reward);
-      const isDuplicateByRewardKey = !!(rewardKey && quest.expiresAt && quest.game && activeKnown.some(q => {
+      const isDuplicateByRewardKey = !!(rewardKey && quest.expiresAt && hasRealGame && activeKnown.some(q => {
         if (!q.game || q.game !== quest.game || !q.expiresAt) return false;
         const qKey = extractRewardKey(q.reward);
         if (!qKey || qKey !== rewardKey) return false;
@@ -3423,14 +3547,7 @@ app.post('/webhook/quests', async (req, res) => {
                     sentToCount++;
                   } catch (chError) {
                     console.error(`⚠️  Error sending to channel ${ch.id}:`, chError.message);
-                    if (chError.code === 10003 || chError.code === 50013 || chError.code === 50001) {
-                      const s = guildSettings.get(guildId);
-                      if (s?.channels) {
-                        s.channels = s.channels.filter(c => c.id !== ch.id);
-                        console.log(`  🧹 Removed stale channel ${ch.id} from guild ${guildId}`);
-                        saveData();
-                      }
-                    }
+                    noteChannelFailure(ch.id, chError);
                   }
                 }
               }
@@ -3667,7 +3784,7 @@ app.get('/health', (req, res) => {
 
 // Start Express server
 const PORT = process.env.WEBHOOK_PORT || 3001;
-app.listen(PORT, () => {
+app.listen(PORT, '127.0.0.1', () => { // scraper posts via localhost; /webhook/quests has no auth, so never expose it
   console.log(`🌐 Webhook server running on http://localhost:${PORT}`);
 });
 
