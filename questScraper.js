@@ -615,6 +615,9 @@ async function start() {
   } else {
     const waitTime = Math.round((SCAN_INTERVAL - timeSinceLastScan) / 1000);
     console.log(`⏳ Last scan was ${Math.round(timeSinceLastScan / 1000)}s ago - waiting ${waitTime}s`);
+    // Scan when the remaining wait is over, then keep the regular cadence (restarts used to push the scan a full interval out).
+    setTimeout(() => { fetchQuests(); setInterval(fetchQuests, SCAN_INTERVAL); }, waitTime * 1000);
+    return;
   }
 
   setInterval(fetchQuests, SCAN_INTERVAL);
