@@ -1,5 +1,5 @@
 const { escapeMarkdown, Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-const { REST } = require('discord.js');
+const { REST, Options } = require('discord.js');
 const { Routes } = require('discord.js');
 const dotenv = require('dotenv');
 const axios = require('axios');
@@ -19,6 +19,10 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
   ],
+  makeCache: Options.cacheWithLimits({
+    ...Options.DefaultMakeCacheSettings,
+    MessageManager: 0,
+  }),
 });
 
 // Data persistence
@@ -90,6 +94,15 @@ let userPreferences = new Map(); // { userId: { dmNotifications: boolean } }
 let scanInterval;
 let botReady = false; // Flag to prevent sending notifications during startup
 let paginationState = new Map(); // Track pagination state: messageId -> { page, totalPages, quests }
+const paginationTouched = new Map();
+const paginationSetRaw = paginationState.set.bind(paginationState);
+paginationState.set = (key, value) => { paginationTouched.set(key, Date.now()); return paginationSetRaw(key, value); };
+setInterval(() => {
+  const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+  for (const [key, ts] of paginationTouched) {
+    if (ts < cutoff) { paginationTouched.delete(key); paginationState.delete(key); }
+  }
+}, 10 * 60 * 1000);
 
 const SCAN_INTERVAL = process.env.SCAN_INTERVAL || 60000; // 1 minute default
 

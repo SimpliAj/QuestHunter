@@ -9,7 +9,13 @@ dotenv.config();
 
 const QUESTS_JSON_URL = 'https://raw.githubusercontent.com/aamiaa/discord-api-diff/refs/heads/main/quests.json';
 const QUESTS_API_URL = 'https://api.discordquest.com/api/quests';
-const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://localhost:3001/webhook/quests';
+// 2026-11-11: aamiaa mirror + discordquest.com both froze on 2026-11-09; this community mirror keeps updating.
+const QUESTS_JSON_URL_2 = 'https://raw.githubusercontent.com/lucifer-reborn/All-Discord-Quests/main/quests.json';
+// 2026-10-19, user-reported (no new quests posted since Oct 16): 'localhost' resolves to
+// ::1 first on this box, but index.js's webhook server only binds 127.0.0.1 -- every POST
+// here hit ECONNREFUSED on the IPv6 loopback and silently never reached the bot. Pin the
+// literal IPv4 address so this can't regress even if WEBHOOK_URL is ever unset again.
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://127.0.0.1:3001/webhook/quests';
 const ERROR_WEBHOOK = process.env.ERROR_WEBHOOK;
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
 const SCAN_INTERVAL = parseInt(process.env.SCRAPER_INTERVAL) || 1800000; // 30 min default
@@ -423,7 +429,7 @@ async function parseActiveQuests(allQuests) {
 async function sendQuestsToBot(quests) {
   if (!NOTIFICATION_CHANNEL_ID) {
     console.warn('⚠️  NOTIFICATION_CHANNEL_ID not set');
-    return;
+    return false;
   }
   // startup.js spawns this scraper and index.js at the same time, so the initial scan
   // regularly beat the bot's webhook server to the port and was dropped with
@@ -437,17 +443,18 @@ async function sendQuestsToBot(quests) {
         timestamp: new Date()
       }, { timeout: 15000 });
       console.log('✅ Quests sent to bot successfully');
-      return;
+      return true;
     } catch (e) {
       const retriable = e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET';
       if (!retriable || attempt === 5) {
         console.error('❌ Failed to send quests to bot:', e.message);
-        return;
+        return false;
       }
       console.warn(`⚠️  Bot webhook not up yet (${e.code}), retry ${attempt}/4 in 10s...`);
       await new Promise(r => setTimeout(r, 10000));
     }
   }
+  return false;
 }
 
 // New quests launch densely: across the 366 days to 2026-09-04 a healthy feed never went
@@ -510,10 +517,12 @@ async function fetchQuests() {
   console.log('🔍 Fetching quests from all sources...');
   try {
     // Fetch from both sources in parallel
-    const [apiQuests, githubQuests] = await Promise.all([
+    const [apiQuests, githubQuests1, githubQuests2] = await Promise.all([
       fetchFromSource(QUESTS_API_URL, 'discordquest.com'),
       fetchFromSource(QUESTS_JSON_URL, 'github'),
+      fetchFromSource(QUESTS_JSON_URL_2, 'github-lucifer'),
     ]);
+    const githubQuests = [...githubQuests1, ...githubQuests2];
 
     // Merge: API entries take priority, GitHub fills gaps
     const seen = new Map();
@@ -552,15 +561,23 @@ async function fetchQuests() {
       console.log(`✓ No new quests (${activeQuests.length} active)`);
     }
 
-    await sendQuestsToBot(activeQuests);
+    const sent = await sendQuestsToBot(activeQuests);
 
-    // Only mark as notified AFTER successful send to bot
-    for (const q of activeQuests) {
-      notifiedQuestIds.add(String(q.id));
-      for (const id of (q.allIds || [])) notifiedQuestIds.add(String(id));
+    // Only mark as notified AFTER a confirmed successful send to bot -- sendQuestsToBot
+    // used to swallow its own failures and this ran unconditionally anyway, so any quest
+    // whose webhook delivery failed (bot not up yet, crash mid-send, ...) got permanently
+    // blacklisted here without ever actually reaching the bot. 2026-10-19, user-reported
+    // (EA SPORTS FC 27 / Clayface / Mosquito Bowl / Friends from Afar never posted).
+    if (sent) {
+      for (const q of activeQuests) {
+        notifiedQuestIds.add(String(q.id));
+        for (const id of (q.allIds || [])) notifiedQuestIds.add(String(id));
+      }
+      saveNotifiedQuestIds(notifiedQuestIds);
+      saveLastScanTime();
+    } else if (newCount > 0) {
+      console.warn(`⚠️  Send failed -- ${newCount} new quest(s) will be retried next scan instead of being marked notified`);
     }
-    saveNotifiedQuestIds(notifiedQuestIds);
-    saveLastScanTime();
 
   } catch (error) {
     console.error('❌ Error fetching quests:', error.message);
