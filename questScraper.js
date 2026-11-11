@@ -543,10 +543,13 @@ async function fetchQuests() {
 
     const activeQuests = await parseActiveQuests(allQuests);
     // Quest text ends up in message content of 500+ guilds: neutralise mass/user/role mentions from feed data.
-    const defang = v => typeof v === 'string' ? v.replace(/@(everyone|here)/gi, '@\u200b$1').replace(/<@[!&]?\d+>/g, '') : v;
+    const defang = v => typeof v === 'string' ? v.replace(/@/g, '@\u200b') : v;
     for (const q of activeQuests) {
-      for (const k of ['name', 'game', 'reward']) q[k] = defang(q[k]);
-      if (Array.isArray(q.tasks)) q.tasks = q.tasks.map(defang);
+      for (const [k, v] of Object.entries(q)) {
+        if (k === 'id' || k === 'allIds' || /url|image|logo/i.test(k)) continue;
+        if (typeof v === 'string') q[k] = defang(v);
+        else if (Array.isArray(v)) q[k] = v.map(x => (x && typeof x === 'object') ? Object.fromEntries(Object.entries(x).map(([a, b]) => [a, defang(b)])) : defang(x));
+      }
     }
     console.log(`✅ ${activeQuests.length} currently active quest(s)`);
 
