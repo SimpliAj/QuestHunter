@@ -532,7 +532,8 @@ async function fetchQuests() {
     for (const q of githubQuests) {
       if (q.id && !seen.has(String(q.id))) seen.set(String(q.id), q);
     }
-    const allQuests = [...seen.values()];
+    // Third-party feeds are untrusted: ids feed file paths (gif cache), so only real Discord snowflakes pass.
+    const allQuests = [...seen.values()].filter(q => /^\d{17,20}$/.test(String(q.id)));
 
     if (allQuests.length === 0) {
       throw new Error('Both sources returned no data');
@@ -541,6 +542,12 @@ async function fetchQuests() {
     console.log(`📊 ${allQuests.length} total unique quests (${apiQuests.length} from API, ${githubQuests.length} from GitHub)`);
 
     const activeQuests = await parseActiveQuests(allQuests);
+    // Quest text ends up in message content of 500+ guilds: neutralise mass/user/role mentions from feed data.
+    const defang = v => typeof v === 'string' ? v.replace(/@(everyone|here)/gi, '@\u200b$1').replace(/<@[!&]?\d+>/g, '') : v;
+    for (const q of activeQuests) {
+      for (const k of ['name', 'game', 'reward']) q[k] = defang(q[k]);
+      if (Array.isArray(q.tasks)) q.tasks = q.tasks.map(defang);
+    }
     console.log(`✅ ${activeQuests.length} currently active quest(s)`);
 
     if (activeQuests.length === 0) {
